@@ -4,9 +4,9 @@
 
 No account, No servers, No relay to trust.  just two peers, a STUN lookup, and a direct encrypted tunnel.
 
-![Version](https://img.shields.io/badge/version-2.0-brightgreen)
+![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Language](https://img.shields.io/badge/language-Python_3.9+-orange)
+![Language](https://img.shields.io/badge/language-Python_3.9+-yellow)
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
