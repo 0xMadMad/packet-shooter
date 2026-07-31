@@ -2,7 +2,7 @@
 
 **Serverless End-to-End Encrypted Chat Over Raw UDP**
 
-No account, No servers, No relay to trust. just two peers, a STUN lookup, and a direct encrypted tunnel.
+No account, No servers, No relay to trust.  just two peers, a STUN lookup, and a direct encrypted tunnel.
 
 ![Version](https://img.shields.io/badge/version-2.0-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
