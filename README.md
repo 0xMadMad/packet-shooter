@@ -176,7 +176,7 @@ you *can* build an encrypted tunnel with `openssl s_server`/`s_client` or `socat
 
 ---
 
-## 🏗️  architecture
+## 🏗️ architecture
 
 ```
    Peer A                                              Peer B
