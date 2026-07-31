@@ -10,7 +10,7 @@ No account, No servers, No relay to trust.  just two peers, a STUN lookup, and a
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
-[Quick Start](#-quick-start) • [Features](#-features) • [Security Model](#-security-model) • [Comparison](#-comparison) • [Architecture](#️-architecture) • [Changelog](#-changelog)
+[quick start](#-quick-start) • [features](#-features) • [security model](#-security-model) • [comparison](#-comparison) • [architecture](#️-architecture)
 
 ---
 
