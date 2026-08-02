@@ -2,7 +2,7 @@
 
 **Serverless End-to-End Encrypted Chat Over Raw UDP**
 
-No account, No servers, No relay to trust.  just two peers, a STUN lookup, and a direct encrypted tunnel.
+Two peers, A STUN lookup, A direct encrypted tunnel.  No account, No server, No relay to trust.
 
 ![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -10,11 +10,11 @@ No account, No servers, No relay to trust.  just two peers, a STUN lookup, and a
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
-[quick start](#-quick-start) • [features](#-features) • [security model](#-security-model) • [comparison](#-comparison) • [architecture](#️-architecture)
+[Quick Start](#-quick-start) • [Why packet-shooter?](#why-packet-shooter) • [Security Model](#-security-model) • [Architecture](#️-architecture) • [Reference](#-reference) • [Limitations](#-known-limitations)
 
 ---
 
-packet-shooter is a dependency-light chat tool that connects two peers **directly** over UDP. it punches through NATs, authenticates the key exchange, gives you a TUI terminal, and encrypts every message with modern AEAD cryptography.
+packet-shooter connects two peers **directly** over UDP. no middle server, ever. It punches through NATs, authenticates the key exchange, and encrypts every message with modern AEAD cryptography, all from a full-screen terminal UI.
 
 ```
 pip install prompt_toolkit cryptography
@@ -25,20 +25,13 @@ python3 p2pchat_tui.py
 
 ## why packet-shooter?
 
-most "secure" chat tools ask you to trust a server operator, a phone number, or a corporate account system. but packet-shooter doesn't:
-
-- 🔐 **true end-to-end encryption** — X25519 key exchange + ChaCha20-Poly1305 AEAD, with **directional subkeys** so the two peers never share a key+nonce pair
-- 🕵️ **no relay, no server, no logs** — your messages go directly from your socket to peer's; there is no third machine in between that could log, retain, or leak anything
-- 🧾 **no accounts, no phone numbers, no signup** — the only "identity" is an ephemeral cryptographic keypair generated fresh for the session
-- 🛡️ **active MITM protection** — optional pre-shared passphrase authenticates the handshake itself (HMAC-SHA256), not just a post-hoc fingerprint check
-- 👁️ **mandatory fingerprint confirmation** — the chat will not start until you explicitly confirm the derived key fingerprint matches what your peer sees
-- 🔁 **replay-attack resistant** — sliding anti-replay window on the message sequence counter, the same technique used in IPsec/TLS
-- 📦 **traffic-analysis resistant** — messages are padded to fixed-size blocks before encryption, so ciphertext length doesn't leak exact message size
-- 🧱 **reliability over raw UDP** — custom ACK/retransmit layer, so you get TCP-like delivery guarantees without TCP's fingerprint
-- 🕳️ **continuous NAT hole punching** — a background thread keeps the UDP path open even during silence
-- 🚧 **rate-limited against forged packets** — a flood of garbage ciphertext can't burn unlimited CPU on decryption attempts
-- 🌐 **DNS-filtering-resistant STUN** — falls back through a prioritized list of STUN hostnames, hardcoded IPs, and a live community-maintained list
-- 🪶 **two dependencies, two files** — `prompt_toolkit` + `cryptography`, nothing else
+- 🔐 **true end-to-end encryption** — X25519 key exchange + ChaCha20-Poly1305 AEAD, with directional subkeys so the two peers never share a key+nonce pair
+- 🕵️ **no relay, no server, no logs** — messages go straight from your socket to your peer's; there's no third machine in between that could log or leak anything
+- 🧾 **no accounts, no signup** — the only "identity" is an ephemeral keypair generated fresh for the session
+- 👁️ **mandatory fingerprint confirmation** — the chat will not unlock until you explicitly confirm the derived key fingerprint matches what your peer sees
+- 🛡️ **optional passphrase-authenticated handshake** — closes the active-MITM window a bare key exchange leaves open
+- 🔁 **replay-resistant, tamper-evident** — every message is authenticated and sequence-checked
+- 🕳️ **DNS-filtering-resistant STUN + continuous hole punching** — stays connected even through restrictive networks
 
 ---
 
@@ -50,7 +43,7 @@ most "secure" chat tools ask you to trust a server operator, a phone number, or 
 pip install prompt_toolkit cryptography
 ```
 
-### run (full-screen TUI version)
+### run
 
 ```
 python3 p2pchat_tui.py
@@ -59,60 +52,61 @@ python3 p2pchat_tui.py
 ### what happens next
 
 1. you're asked for a **local port** (like `55000`).
-2. the tool queries STUN and shows **your public IP:PORT**, send this to your peer over any channel (phoneCall, SMS, email, whatever).
+2. the tool queries STUN and shows **your public IP:PORT** — send this to your peer over any channel (phone call, SMS, email, whatever).
 3. you enter **your peer's public IP:PORT** (they send you theirs the same way).
 4. *(OPTIONAL BUT RECOMMENDED)* you enter a **shared passphrase** agreed on beforehand, which cryptographically authenticates the handshake against active interception.
-5. the tool performs the key exchange and shows a **fingerprint**, compare it with your peer over that other separate channel(or in your first message in chat). **you must confirm it matches before chat unlocks.**
-6. chat.
+5. the tool performs the key exchange and shows a **fingerprint**; compare it with your peer over that separate channel. **you must confirm it matches before the chat unlocks.**
+>‌ NOT RECOMMENDED but you can confirm and check it in first message in the app.
+6. the full-screen chat opens. hole punching keeps running in the background to keep the path open.
 
-> **note:** both peers need to be reachable via UDP hole punching. see [availability under symmetric NAT](#-security-model) for the one case this doesn't cover yet..
+> **note:** both peers need to be reachable via UDP hole punching. see [known limitations](#-known-limitations) for the one case this doesn't cover yet.
+
+### in-chat keys
+
+| key | action |
+| --- | --- |
+| `Enter` | send message |
+| `/exit`, `exit`, `/quit`, `quit` | quit |
+| `Ctrl+C` | quit immediately |
 
 ---
 
 ## ✨ features
 
 ### 🔐 cryptographic core
+- **X25519 (ECDH)** — each session generates a fresh, ephemeral keypair; nothing reused across sessions
+- **HKDF-SHA256 directional key derivation** — two independent subkeys (`initiator→responder`, `responder→initiator`) instead of one shared key, so each direction of the conversation uses its own key and nonce space. this rules out the nonce-reuse bug class that naive "one shared key" P2P designs run into
+- **ChaCha20-Poly1305 AEAD** — every message is encrypted and authenticated in one step; tampered ciphertext is rejected outright, never silently corrupted
+- **message padding** — plaintext is length-prefixed and padded to fixed 64-byte blocks before encryption, so an observer watching ciphertext sizes on the wire learns only a size bucket, not the exact length
+- **fingerprint-based verification** — a short, human-comparable code derived from *both* directional keys combined, so a match proves both sides really landed on the same secret, not just that they swapped plausible-looking public keys
 
-end-to-end encryption is built from well-established primitives, composed carefully rather than reinvented:
+### 🛡️ handshake authentication (anti-MITM)
+- **optional pre-shared passphrase** — if you and your peer agree on one beforehand over any side channel, handshake packets are authenticated with HMAC-SHA256. an attacker without the passphrase cannot forge a valid handshake packet
+- **mandatory fingerprint confirmation** — even without a passphrase, the tool will not proceed into chat until you explicitly type `y` to confirm the fingerprint matches. there's no silent bypass
+- **deterministic role assignment** — initiator/responder roles fall out of a plain comparison of the two public keys, so both sides agree on directional key assignment with no extra round-trip
 
-- **X25519 (ECDH)** — each session generates a fresh, ephemeral keypair; nothing is reused across sessions
-- **HKDF-SHA256 directional key derivation** — instead of one shared key, two independent subkeys are derived (`initiator→responder` and `responder→initiator`), so each direction of the conversation uses its own key and nonce space. this eliminates the nonce-reuse class of bugs that plagues naive "one shared key" P2P designs
-- **ChaCha20-Poly1305 AEAD** — every message is both encrypted and authenticated; tampered ciphertext is rejected, not silently corrupted
-- **message padding** — plaintext is length-prefixed and padded to fixed 64-byte blocks before encryption, so an observer watching ciphertext sizes on the wire learns much less about what's being said
-- **fingerprint-based verification** — a short, human-comparable fingerprint is derived from *both* directional keys combined, so a match proves both sides really derived the same secret, not just that they swapped plausible-looking public keys
-
-### 🛡️  handshake authentication (anti-MITM)
-
-- **optional pre-shared passphrase (`setup_connection`)** — if you and your peer agree on a passphrase beforehand (over any side channel), the handshake packets are authenticated with HMAC-SHA256. an attacker without the passphrase cannot forge a valid handshake packet, closing the active-MITM window that a bare Diffie-Hellman exchange leaves open
-- **mandatory fingerprint confirmation (`confirm_fingerprint_or_raise`)** — even without a passphrase, the tool will not proceed into chat until you explicitly type `y` to confirm the fingerprint matches. there is no silent bypass
-- **deterministic role assignment** — initiator/responder roles are derived from a simple comparison of the two public keys, so both sides agree on directional key assignment without any extra round-trip
-
-### 🔁 replay Protection
-
+### 🔁 replay protection
 a sliding anti-replay window (1024 messages wide) tracks the highest sequence number seen and rejects:
 
 - any sequence number far older than the current window (stale/replayed)
 - any sequence number already seen once (exact replay)
 
-this mirrors the anti-replay mechanism used in IPsec and TLS 1.3
+this mirrors the anti-replay approach used in IPsec and TLS.
 
 ### 🧱 reliability layer over UDP
+raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits directly on top of the encryption layer:
 
-raw UDP drops and reorders packets. a lightweight ACK/retransmit layer sits directly on top of the encryption layer:
-
-- every data packet is retried (up to 8 times, 1-second spacing) until acknowledged
-- ACKs are sent even for packets that turn out to be replays, so legitimate retransmits caused by lost ACKs aren't mistaken for attacks
-- no connection state machine, no handshake beyond the crypto handshake, just enough reliability to make chat usable
+- every data packet is retried up to 8 times, 1 second apart, until acknowledged
+- ACKs are sent even for packets that turn out to be replays. a lost ACK shouldn't make a legitimate retransmit look like an attack
+- no connection state machine beyond the crypto handshake, just enough reliability to make chat usable
 
 ### 🕳️ NAT traversal
-
-- **STUN with layered fallback** — tries Google/Cloudflare STUN first, then a community-maintained live server list, then a hardcoded static IP list, then secondary hostnames, resilient to DNS-level blocking of any single provider
-- **continuous background hole punching** — sends lightweight unencrypted `P` packets to keep the NAT mapping alive, backing off to a slow keepalive once the peer is confirmed reachable
+- **layered STUN fallback** — tries Google/Cloudflare first, then a community-maintained live server list fetched from GitHub, then a hardcoded static IP list, then secondary hostnames. resilient to DNS-level blocking of any single provider
+- **continuous background hole punching** — sends lightweight, unencrypted `P` packets to keep the NAT mapping alive, backing off to a slow keepalive once the peer is confirmed reachable
 
 ### 🚧 abuse resistance
-
-- **rate-limited decryption attempts** — a token-bucket limiter caps how many invalid/undecryptable packets are processed per time window, blunting a flood of forged ciphertext before it can burn CPU
-- **input validation on setup** — local port and peer port prompts retry on invalid input instead of crashing with a traceback
+- **rate-limited decryption attempts** — a token-bucket limiter caps how many invalid/undecryptable packets are processed per time window, so a flood of forged ciphertext can't burn unlimited CPU forcing decryption attempts
+- **input validation on setup** — port prompts retry on bad input instead of crashing
 
 ---
 
@@ -124,55 +118,24 @@ raw UDP drops and reorders packets. a lightweight ACK/retransmit layer sits dire
 | --- | --- |
 | **passive eavesdropping** | end-to-end AEAD encryption (ChaCha20-Poly1305); a network observer sees only ciphertext |
 | **active MITM during key exchange** | optional passphrase-authenticated handshake (HMAC-SHA256) + mandatory fingerprint confirmation |
-| **message tampering** | AEAD authentication tag; any modified ciphertext fails to decrypt and is dropped |
+| **message tampering** | AEAD authentication tag; modified ciphertext fails to decrypt and is dropped |
 | **replay attacks** | sliding anti-replay window on the message sequence counter |
-| **nonce reuse between peers** | independent directional keys derived via HKDF. the two peers never share a key+nonce pair |
+| **nonce reuse between peers** | independent directional keys derived via HKDF; the two peers never share a key+nonce pair |
 | **traffic analysis on message length** | fixed-block padding before encryption |
 | **garbage-packet flooding** | rate-limited decryption attempts |
-| **DNS-level STUN blocking** | layered STUN fallback across multiple providers, hostnames, and hardcoded IPs |
+| **DNS-level STUN blocking** | layered fallback across multiple providers, hostnames, and hardcoded IPs |
 
-### what this tool does *not* protect against (by design or by nature of P2P)
+### what this tool does *not* protect against
 
 | limitation | notes |
 | --- | --- |
-| **no forward secrecy across the session lifetime** | session keys are ephemeral per-run, but not ratcheted per-message. memory compromise during an active session can expose that session's traffic |
-| **IP address exposure** | this is inherent to any P2P tool, your peer (and anyone they share it with) learns your public IP. use a VPN alongside this tool if that's a concern for your threat model |
-| **endpoint compromise** | if either device is compromised, the conversation is compromised. no chat tool can fix this |
-| **metadata about *that* you're chatting, and roughly *when*** | STUN queries and UDP hole-punch traffic are visible to network observers, even though content is encrypted |
-| **availability under symmetric NAT** | some carrier-grade NATs (common on mobile data) assign a different outbound port per destination, breaking hole punching entirely. manual port forwarding on a router fixes this for a peer who controls their own router. |
+| **no forward secrecy within a session** | the session's X25519 keypair is ephemeral per-run but not ratcheted per-message. compromise of that key while the session is still open exposes that session's traffic |
+| **IP address exposure** | inherent to any direct P2P tool; your peer learns your public IP. pair with a VPN if that's a concern for your threat model |
+| **endpoint compromise** | if either device is compromised, the conversation is compromised — no chat tool can fix this |
+| **metadata: that you're chatting, and roughly when** | STUN queries and UDP hole-punch traffic are visible to a network observer even though content is encrypted |
+| **symmetric NAT breaks hole punching** | see [known limitations](#-known-limitations) for details and the fallback options being worked on. |
 
-> **note:** port forwarding can't help when *both* peers are behind carrier-grade NAT with no router access, since neither side can forward anything.
-
-> **bottom line:** the cryptography here (X25519 + ChaCha20-Poly1305 + HKDF) is standard and solid. the weakest link in any P2P handshake is the manual exchange of addresses/keys, which is exactly why the passphrase authentication and mandatory fingerprint confirmation exist.use them.
-
----
-
-## 📊 comparison
-
-| Feature | **Packet-Shooter** | **Signal** | **Telegram (secret chat)** | **Plain netcat/socat + TLS** |
-| --- | --- | --- | --- | --- |
-| **Requires a server/relay** | ❌ Direct P2P only | ✅ Signal servers | ✅ Telegram servers | ❌ Direct |
-| **Requires phone number/account** | ❌ None | ✅ Phone number | ✅ Phone number | ❌ None |
-| **End-to-end encryption** | ✅ X25519 + ChaCha20-Poly1305 | ✅ Double Ratchet | ✅ MTProto (secret chats only) | ⚠️ Depends on setup |
-| **Forward secrecy (per-message ratcheting)** | ❌ Not implemented yet | ✅ Double Ratchet | ✅ | ❌ |
-| **Directional key separation** | ✅ HKDF-derived subkeys | ✅ | ✅ | ⚠️ Depends on cipher suite |
-| **Active MITM protection on handshake** | ✅ Optional passphrase HMAC | ✅ Safety numbers | ⚠️ Manual key comparison | ❌ Usually none |
-| **Mandatory fingerprint confirmation** | ✅ Blocks chat until confirmed | ⚠️ Optional/manual | ⚠️ Optional/manual | ❌ N/A |
-| **Replay protection** | ✅ Sliding window | ✅ | ✅ | ⚠️ Depends on TLS config |
-| **Message length padding** | ✅ Fixed 64-byte blocks | ✅ (Sealed Sender + padding) | ❌ | ❌ |
-| **NAT traversal (STUN + hole punching)** | ✅ Built-in | N/A (uses servers) | N/A (uses servers) | ❌ Manual |
-| **Works with no internet infra besides STUN** | ✅ | ❌ | ❌ | ✅ (with manual IP exchange) |
-| **Message history stored anywhere** | ❌ Never persisted | ✅ (encrypted, on-device) | ✅ (server + device) | ❌ |
-| **Dependencies** | 2 Python packages | Full mobile/desktop app | Full mobile/desktop app | `openssl`/`socat` |
-| **Codebase size** | ~2 small files | Large, complex | Large, complex | Minimal, but no built-in auth |
-
-### why not just use Signal or Telegram?
-
-Signal and Telegram are excellent for daily use and battle-tested at scale. packet-shooter exists for a different, narrower case: when you specifically want **no server in the loop at all**, don't want to hand over a phone number, and are comfortable manually exchanging a handshake with your peer. it trades convenience and mobile support for architectural simplicity and zero third-party infrastructure.
-
-### why not raw netcat + TLS?
-
-you *can* build an encrypted tunnel with `openssl s_server`/`s_client` or `socat`, but you're on your own for NAT traversal, replay protection, reliability over UDP, and critically, certificate trust (there's no fingerprint-confirmation workflow built in).
+> **bottom line:** the cryptography here (X25519 + ChaCha20-Poly1305 + HKDF) is standard and solid. the weakest link in any P2P handshake is the manual exchange of addresses and keys. that's exactly why the passphrase authentication and mandatory fingerprint confirmation exist. use them.
 
 ---
 
@@ -207,7 +170,7 @@ you *can* build an encrypted tunnel with `openssl s_server`/`s_client` or `socat
 | component | role |
 | --- | --- |
 | **`p2pcore.py`** | STUN client, `CryptoSession` (X25519/HKDF/ChaCha20-Poly1305), `ReplayGuard`, `RateLimiter`, `SecureReliableChannel` (ACK/retransmit + hole punching), handshake + shared interactive setup |
-| **`p2pchat_tui.py`** | full-screen `prompt_toolkit` `Application` with a live status bar, fingerprint bar, and scrolling chat buffer |
+| **`p2pchat_tui.py`** | full-screen `prompt_toolkit` `Application` (`ChatTUI`) — status bar, confirmed-fingerprint bar, scrolling chat log, input line |
 
 ### packet formats (post-handshake)
 
@@ -220,13 +183,9 @@ you *can* build an encrypted tunnel with `openssl s_server`/`s_client` or `socat
 
 ---
 
-## 📖 what happens when running the tool?
+## 📖 reference
 
-```
-python3 p2pchat_tui.py      # Full-screen TUI chat
-```
-
-### interactive setup prompts (both interfaces) 
+### interactive setup prompts
 
 ```
 local port to use (like 55000):
@@ -236,12 +195,13 @@ peer's public PORT:
 shared passphrase (optional):
 ```
 
-### fingerprint confirmation (both interfaces, mandatory)
+### fingerprint confirmation (mandatory)
 
 ```
 ==================== Security Verification (Important) ====================
 shared key fingerprint: XXXX-XXXX-XXXX-XXXX-XXXX
-compare this code with the peer over a separate channel (phone call, SMS, another messaging app, etc.). ONLY CONTINUE IF IT MATCHES EXACTLY.
+compare this code with the peer over a separate channel (phone call,
+another messaging app, etc.), ONLY CONTINUE IF IT MATCHES EXACTLY.
 ==============================================================
 
 does this fingerprint match what the peer sees? [y/n]:
@@ -249,25 +209,28 @@ does this fingerprint match what the peer sees? [y/n]:
 
 answering anything other than `y`/`yes` aborts the connection.
 
-### in-chat commands
+### the TUI screen (`ChatTUI`)
 
-| interface | command | action |
-| --- | --- | --- |
-| TUI | `Enter` | send message |
-| TUI | `/exit`, `exit`, `/quit`, `quit` | quit |
-| TUI | `Ctrl+C` | quit immediately |
+| element | shows |
+| --- | --- |
+| status bar | `[Connected]` or `[Waiting for peer...]`, your address, peer's address |
+| fingerprint bar | the already-confirmed key fingerprint, kept visible for ongoing reference |
+| chat log | timestamped messages from you (`me >`), your peer (`ip:port >`), and system status lines (`*`) |
+| input line | where you type; `Enter` sends |
+
+connection status flips to `[Connected]` the moment any message is received from the peer — hole punching runs in a background thread from the start, independent of the UI.
 
 ### key `p2pcore.py` functions (for embedding/scripting)
 
 ```python
 from p2pcore import (
-    setup_connection,           # full interactive setup: port, STUN, peer address, passphrase, handshake
-    confirm_fingerprint_or_raise,  # blocks until user confirms fingerprint; raises RuntimeError on mismatch
-    SecureReliableChannel,      # encrypted, reliable, replay-protected channel over a UDP socket
-    CryptoSession,              # X25519 keypair + directional AEAD encrypt/decrypt
-    perform_handshake,          # lower-level handshake if you want to skip the interactive prompts
-    HandshakeAuthError,         # raised when a pre-shared passphrase check fails
-    get_public_endpoint,        # raw STUN lookup
+    setup_connection,             # full interactive setup: port, STUN, peer address, passphrase, handshake
+    confirm_fingerprint_or_raise, # blocks until user confirms fingerprint; raises RuntimeError on mismatch
+    SecureReliableChannel,        # encrypted, reliable, replay-protected channel over a UDP socket
+    CryptoSession,                # X25519 keypair + directional AEAD encrypt/decrypt
+    perform_handshake,            # lower-level handshake if you want to skip the interactive prompts
+    HandshakeAuthError,           # raised when a pre-shared passphrase check fails
+    get_public_endpoint,          # raw STUN lookup
 )
 ```
 
@@ -275,13 +238,13 @@ from p2pcore import (
 
 ## 💻 system requirements
 
-| Requirement | Details |
+| requirement | details |
 | --- | --- |
 | **python** | 3.9+ |
 | **dependencies** | `prompt_toolkit`, `cryptography` |
-| **OS** | linux, macOS, windows (anywhere python + these two packages run) |
+| **OS** | Linux, macOS, Windows (anywhere Python + these two packages run) |
 | **network** | UDP outbound/inbound on your chosen local port; STUN access (UDP/3478 and friends) |
-| **RAM** | negligible. no persistent storage, no message history buffer beyond the visible scrollback |
+| **RAM** | negligible. no history buffer beyond the visible scrollback |
 
 ---
 
@@ -289,16 +252,27 @@ from p2pcore import (
 
 | file | purpose |
 | --- | --- |
-| `p2pcore.py` | shared core: STUN client, cryptography (`CryptoSession`), replay protection (`ReplayGuard`), rate limiting (`RateLimiter`), reliable encrypted channel (`SecureReliableChannel`), handshake (`perform_handshake`), and interactive setup (`setup_connection`, `confirm_fingerprint_or_raise`) |
+| `p2pcore.py` | shared core: STUN client, cryptography (`CryptoSession`), replay protection (`ReplayGuard`), rate limiting (`RateLimiter`), reliable encrypted channel (`SecureReliableChannel`), handshake (`perform_handshake`), interactive setup (`setup_connection`, `confirm_fingerprint_or_raise`) |
 | `p2pchat_tui.py` | full-screen TUI front-end (`ChatTUI` class) |
 
-no configuration files, no logs, no database. nothing is written to disk. closing either program leaves no trace beyond process memory that has already been freed.
+no configuration files, no logs, no database. nothing is written to disk.
 
 ---
 
-## ⚠️  disclaimer
+## ⚠️ known limitations
 
-this is an independent tool built around standard, well-reviewed cryptographic primitives (`cryptography` library implementations of X25519, HKDF, and ChaCha20-Poly1305). it has **not** undergone a formal third-party security audit. review the source yourself before relying on it for anything where the stakes are high, and treat the security model section above as the actual scope of what it protects against, not marketing copy.
+- **no forward secrecy within a session** — one X25519 keypair per run, no per-message or periodic ratcheting.
+- **availability under symmetric NAT** — some carrier-grade NATs (CGNAT, common on mobile data) assign a different outbound port per destination. if the affected peer has access to their own Wi-Fi/router, manual port forwarding (or a better method if we find one) is being considered as a fallback, and we're actively testing and documenting this route. for anyone with no router/Wi-Fi access at all, the tool currently can't be used. we're working on finding a way to address this case too.
+- **the live STUN list fetch is unauthenticated** — plain HTTPS fetch of a public GitHub list, used only as a lowest-priority fallback. a tampered entry can at worst mislead address discovery, not the encrypted chat itself.
+- **`P` (punch) packets are unauthenticated by design** — they carry no data, so spoofing them can only create NAT-state noise, not message compromise.
+- **the anti-replay window is fixed at 1024** — a legitimate but very late/reordered packet older than the window is rejected rather than delivered.
+- **everything hinges on the user actually doing the fingerprint check** — the software can't verify a human did their part correctly.
+
+---
+
+## ⚠️ disclaimer
+
+this is an independent tool built around standard, well-reviewed cryptographic primitives (the `cryptography` library's implementations of X25519, HKDF, and ChaCha20-Poly1305). it has **not** undergone a formal third-party security audit. review the source yourself before relying on it for anything where the stakes are high, and treat the security model section above as the actual scope of what it protects against, not marketing copy.
 
 ---
 
