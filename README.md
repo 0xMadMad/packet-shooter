@@ -25,13 +25,13 @@ python3 p2pchat_tui.py
 
 ## why packet-shooter?
 
-- 🔐 **true end-to-end encryption** — X25519 key exchange + ChaCha20-Poly1305 AEAD, with directional subkeys so the two peers never share a key+nonce pair
+- 🔐 **[true end-to-end encryption](#-cryptographic-core)** — X25519 key exchange + ChaCha20-Poly1305 AEAD, with directional subkeys so the two peers never share a key+nonce pair
 - 🕵️ **no relay, no server, no logs** — messages go straight from your socket to your peer's; there's no third machine in between that could log or leak anything
 - 🧾 **no accounts, no signup** — the only "identity" is an ephemeral keypair generated fresh for the session
-- 👁️ **mandatory fingerprint confirmation** — the chat will not unlock until you explicitly confirm the derived key fingerprint matches what your peer sees
-- 🛡️ **optional passphrase-authenticated handshake** — closes the active-MITM window a bare key exchange leaves open
-- 🔁 **replay-resistant, tamper-evident** — every message is authenticated and sequence-checked
-- 🕳️ **DNS-filtering-resistant STUN + continuous hole punching** — stays connected even through restrictive networks
+- 👁️ **[mandatory fingerprint confirmation](#️-handshake-authentication-anti-mitm)** — the chat will not unlock until you explicitly confirm the derived key fingerprint matches what your peer sees
+- 🛡️ **[optional passphrase-authenticated handshake](#️-handshake-authentication-anti-mitm)** — closes the active-MITM window a bare key exchange leaves open
+- 🔁 **[replay-resistant, tamper-evident](#-replay-protection)** — every message is authenticated and sequence-checked
+- 🕳️ **[DNS-filtering-resistant STUN + continuous hole punching](#️-nat-traversal)** — stays connected even through restrictive networks
 
 ---
 
