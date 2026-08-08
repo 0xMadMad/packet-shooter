@@ -15,7 +15,7 @@ includes:
   - continuous UDP hole punching in the background
   - basic rate limiting against forged/garbage packet floods
 
-requirements: pip install prompt_toolkit cryptography
+requirements: pip install cryptography
 """
 
 import socket           # TCP/UDP networking (UDP in here)
@@ -382,12 +382,13 @@ class SecureReliableChannel:
     INVALID_PACKET_LIMIT = 20
     INVALID_PACKET_WINDOW = 5.0
 
-    def __init__(self, sock, peer_addr, crypto:CryptoSession, on_message, on_status=None):
+    def __init__(self, sock, peer_addr, crypto:CryptoSession, on_message, on_status=None, on_disconnect=None):
         self.sock = sock
         self.peer_addr = peer_addr
         self.crypto = crypto  # must already have a completed handshake
         self.on_message = on_message
         self.on_status = on_status or (lambda *_: None)
+        self.on_disconnect = on_disconnect or (lambda *_: None)
 
         self.send_seq = 0  # counter for outgoing messages, starts at 0
         self.pending = {}  # {seq: [packet, timestamp, tries]}, unacked messages, a list so entry[1]/entry[2] can be updated in place
@@ -431,6 +432,9 @@ class SecureReliableChannel:
             kind = data[0:1]
             if kind == b"P":  # arriving is the whole point
                 continue  # nothing else to do
+            elif kind == b"X":  # peer sent a graceful "I'm leaving" signal (see stop())
+                self.on_disconnect("peer closed the connection")
+                continue
             elif kind == b"D" and len(data) >= 5:
                 seq = struct.unpack("!I", data[1:5])[0]
                 ciphertext = data[5:]
@@ -490,8 +494,17 @@ class SecureReliableChannel:
         """blocks until something arrives from the peer, or timeout runs out"""
         return self.peer_seen.wait(timeout=timeout)
 
-    def stop(self):
-        """just flips running to False, threads notice on their own"""
+    def stop(self, notify_peer=True):
+        """
+        flips running to False so all loops stop themselves; also tells
+        the peer we're leaving (unless notify_peer=False), so it can show
+        a disconnect state instead of just going silent.
+        """
+        if notify_peer:
+            try:
+                self.sock.sendto(b"X", self.peer_addr)
+            except OSError:
+                pass  # socket might already be in a bad state on the way out, not fatal here
         self.running = False
 
 
@@ -614,7 +627,7 @@ def setup_connection(prompt_passphrase:bool=True, log=print):
     returns (sock, peer_addr, crypto, my_addr_str)
     raises HandshakeAuthError or TimeoutError if the handshake fails
     """
-    local_port = _prompt_int("local port to use (like 55000): ")
+    local_port = _prompt_int("\n#===== IP:PORT Exchange =====#\nlocal port to use (like 55000): ")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", local_port))
@@ -631,10 +644,11 @@ def setup_connection(prompt_passphrase:bool=True, log=print):
     passphrase = None
     if prompt_passphrase:
         print(
-            "\n[*] optional: if you and the peer already agreed on a shared "
-            "     passphrase over a separate channel, entering it here will "
-            "     authenticate the key exchange against active interception.\n"
-            " LEAVE EMPTY TO SKIP (you can still verify the fingerprint manually afterwards) "
+            "\n\n#===== OPTIONAL PassPhrase =====#"
+            "\n[*] optional: if you and the peer already agreed on a shared \n"
+            "              passphrase over a separate channel, entering it here will \n"
+            "              authenticate the key exchange against active interception.\n"
+            "    LEAVE EMPTY TO SKIP (you can still verify the fingerprint manually afterwards) "
         )
         entered = input("shared passphrase (optional): ").strip()
         passphrase = entered if entered else None
@@ -653,15 +667,14 @@ def confirm_fingerprint_or_raise(crypto: CryptoSession):
     can abort the connection instead of silently continuing into a
     possibly MITM'd chat.
     """
-    print("\n==================== Security Verification (Important) ====================")
-    print(f"shared key fingerprint: {crypto.fingerprint()}")
-    print("compare this code with the peer over a separate channel (phone call,")
-    print("another messaging app, etc.), ONLY CONTINUE IF IT MATCHES EXACTLY.")
-    print("==============================================================\n")
+    print("\n\n#===== FingerPrint Verification (Important) =====#")
+    print(f"[*] shared key fingerprint: {crypto.fingerprint()}")
+    print("\n    compare this code with the peer over a another separate channel")
+    print("    ONLY CONTINUE IF IT MATCHES EXACTLY.")
     answer = input("does this fingerprint match what the peer sees? [y/n]: ").strip().lower()
     if answer not in ("y", "yes"):
         raise RuntimeError(
-            "fingerprint not confirmed by the user. aborting the connection "
+            "fingerprint not confirmed by the user. aborting the connection\n"
             "as a precaution against a possible man-in-the-middle."
         )
 
@@ -675,4 +688,4 @@ def _prompt_int(message: str) -> int:
         except ValueError:
             print("please enter a valid whole number.")
 
-# _678
+# _691
