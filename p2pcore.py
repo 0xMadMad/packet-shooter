@@ -669,7 +669,7 @@ def confirm_fingerprint_or_raise(crypto: CryptoSession):
     """
     print("\n\n#===== FingerPrint Verification (Important) =====#")
     print(f"[*] shared key fingerprint: {crypto.fingerprint()}")
-    print("\n    compare this code with the peer over a another separate channel")
+    print("\n    compare this code with the peer over a separate channel")
     print("    ONLY CONTINUE IF IT MATCHES EXACTLY.")
     answer = input("does this fingerprint match what the peer sees? [y/n]: ").strip().lower()
     if answer not in ("y", "yes"):
