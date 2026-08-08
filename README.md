@@ -16,11 +16,6 @@ Two peers, A STUN lookup, A direct encrypted tunnel.  No account, No server, No 
 
 packet-shooter connects two peers **directly** over UDP. no middle server, ever. It punches through NATs, authenticates the key exchange, and encrypts every message with modern AEAD cryptography, all from a full-screen terminal UI.
 
-```
-pip install prompt_toolkit cryptography
-python3 p2pchat_tui.py
-```
-
 ---
 
 ## why packet-shooter?
@@ -40,7 +35,7 @@ python3 p2pchat_tui.py
 ### install dependencies
 
 ```
-pip install prompt_toolkit cryptography
+pip install textual cryptography
 ```
 
 ### run
@@ -170,7 +165,7 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 | component | role |
 | --- | --- |
 | **`p2pcore.py`** | STUN client, `CryptoSession` (X25519/HKDF/ChaCha20-Poly1305), `ReplayGuard`, `RateLimiter`, `SecureReliableChannel` (ACK/retransmit + hole punching), handshake + shared interactive setup |
-| **`p2pchat_tui.py`** | full-screen `prompt_toolkit` `Application` (`ChatTUI`) — status bar, confirmed-fingerprint bar, scrolling chat log, input line |
+| **`p2pchat_tui.py`** | full-screen `textual` `Application` (`ChatApp`) — status bar, confirmed-fingerprint bar, scrolling chat log, input line |
 
 ### packet formats (post-handshake)
 
@@ -179,6 +174,7 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 | `D` (data) | `b"D" + seq(4B) + ciphertext` | encrypted chat message |
 | `A` (ACK) | `b"A" + seq(4B)` | acknowledges receipt of a `D` packet |
 | `P` (punch) | `b"P"` | unencrypted NAT keepalive, no payload |
+| `X` (exit) | `b"X"` | unencrypted graceful-disconnect signal, sent when a peer exits cleanly (Ctrl+C or `/exit`) |
 | `H` (handshake) | `b"H" + pubkey(32B)` **or** `b"H" + pubkey(32B) + hmac_tag(32B)` | key exchange, with optional passphrase authentication |
 
 ---
@@ -188,37 +184,38 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 ### interactive setup prompts
 
 ```
+#===== IP:PORT Exchange =====#
 local port to use (like 55000):
 >>> send this information to the other party: <your_public_ip>:<your_public_port>
 peer's public IP:
 peer's public PORT:
+
+#===== OPTIONAL PassPhrase =====#
 shared passphrase (optional):
 ```
 
 ### fingerprint confirmation (mandatory)
 
 ```
-==================== Security Verification (Important) ====================
-shared key fingerprint: XXXX-XXXX-XXXX-XXXX-XXXX
-compare this code with the peer over a separate channel (phone call,
-another messaging app, etc.), ONLY CONTINUE IF IT MATCHES EXACTLY.
-==============================================================
+#===== FingerPrint Verification (Important) =====#
+[*] shared key fingerprint: XXXX-XXXX-XXXX-XXXX-XXXX
+    compare this code with the peer over a separate channel
+    ONLY CONTINUE IF IT MATCHES EXACTLY.
 
 does this fingerprint match what the peer sees? [y/n]:
 ```
 
 answering anything other than `y`/`yes` aborts the connection.
 
-### the TUI screen (`ChatTUI`)
+### the TUI screen (`ChatApp`)
 
 | element | shows |
 | --- | --- |
-| status bar | `[Connected]` or `[Waiting for peer...]`, your address, peer's address |
-| fingerprint bar | the already-confirmed key fingerprint, kept visible for ongoing reference |
-| chat log | timestamped messages from you (`me >`), your peer (`ip:port >`), and system status lines (`*`) |
+| status frame | border title shows `WAITING` / `CONNECTED` / `DISCONNECTED`; three columns inside show your address (green), peer's address (blue), and the fingerprint (purple) |
+| chat log | timestamped messages from you (`ME >`), your peer (`PEER >`), and system status lines (`*`) |
 | input line | where you type; `Enter` sends |
 
-connection status flips to `[Connected]` the moment any message is received from the peer — hole punching runs in a background thread from the start, independent of the UI.
+connection status flips to `CONNECTED` only once a real decrypted chat message is received from the peer. a bare hole-punch keepalive packet is 'WAITING' status and is not enough. hole punching runs in a background thread from the start, independent of the UI.
 
 ### key `p2pcore.py` functions (for embedding/scripting)
 
@@ -226,7 +223,7 @@ connection status flips to `[Connected]` the moment any message is received from
 from p2pcore import (
     setup_connection,             # full interactive setup: port, STUN, peer address, passphrase, handshake
     confirm_fingerprint_or_raise, # blocks until user confirms fingerprint; raises RuntimeError on mismatch
-    SecureReliableChannel,        # encrypted, reliable, replay-protected channel over a UDP socket
+    SecureReliableChannel,        # encrypted, reliable, replay-protected channel; takes on_message/on_status/on_disconnect callbacks
     CryptoSession,                # X25519 keypair + directional AEAD encrypt/decrypt
     perform_handshake,            # lower-level handshake if you want to skip the interactive prompts
     HandshakeAuthError,           # raised when a pre-shared passphrase check fails
@@ -241,7 +238,7 @@ from p2pcore import (
 | requirement | details |
 | --- | --- |
 | **python** | 3.9+ |
-| **dependencies** | `prompt_toolkit`, `cryptography` |
+| **dependencies** | `textual`, `cryptography` |
 | **OS** | Linux, macOS, Windows (anywhere Python + these two packages run) |
 | **network** | UDP outbound/inbound on your chosen local port; STUN access (UDP/3478 and friends) |
 | **RAM** | negligible. no history buffer beyond the visible scrollback |
@@ -253,7 +250,7 @@ from p2pcore import (
 | file | purpose |
 | --- | --- |
 | `p2pcore.py` | shared core: STUN client, cryptography (`CryptoSession`), replay protection (`ReplayGuard`), rate limiting (`RateLimiter`), reliable encrypted channel (`SecureReliableChannel`), handshake (`perform_handshake`), interactive setup (`setup_connection`, `confirm_fingerprint_or_raise`) |
-| `p2pchat_tui.py` | full-screen TUI front-end (`ChatTUI` class) |
+| `p2pchat_tui.py` | full-screen TUI front-end (`ChatApp` class) |
 
 no configuration files, no logs, no database. nothing is written to disk.
 
@@ -267,6 +264,7 @@ no configuration files, no logs, no database. nothing is written to disk.
 - **`P` (punch) packets are unauthenticated by design** — they carry no data, so spoofing them can only create NAT-state noise, not message compromise.
 - **the anti-replay window is fixed at 1024** — a legitimate but very late/reordered packet older than the window is rejected rather than delivered.
 - **everything hinges on the user actually doing the fingerprint check** — the software can't verify a human did their part correctly.
+- **a sudden/unclean disconnect (crash, network drop) is not detected** — only a clean exit (Ctrl+C or `/exit`) sends a disconnect signal to the peer. if the other side just vanishes without exiting cleanly, the UI stays in `CONNECTED` state with no timeout to catch it.
 
 ---
 
