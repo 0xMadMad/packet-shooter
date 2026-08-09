@@ -8,7 +8,6 @@ Two peers, A STUN lookup, A direct encrypted tunnel.  No account, No server, No 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Language](https://img.shields.io/badge/language-Python_3.9+-yellow)
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
-![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
 [Quick Start](#-quick-start) • [Why packet-shooter?](#why-packet-shooter) • [Security Model](#-security-model) • [Architecture](#️-architecture) • [Reference](#-reference) • [Limitations](#-known-limitations)
 
@@ -19,7 +18,6 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 ---
 
 ## why packet-shooter?
-
 - 🔐 **[true end-to-end encryption](#-cryptographic-core)** — X25519 key exchange + ChaCha20-Poly1305 AEAD, with directional subkeys so the two peers never share a key+nonce pair
 - 🕵️ **no relay, no server, no logs** — messages go straight from your socket to your peer's; there's no third machine in between that could log or leak anything
 - 🧾 **no accounts, no signup** — the only "identity" is an ephemeral keypair generated fresh for the session
@@ -30,22 +28,31 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 
 ---
 
+## 💻 system requirements
+| requirement | details |
+| --- | --- |
+| **python** | 3.9+ |
+| **dependencies** | `textual`, `cryptography` |
+| **OS** | anywhere Python + these two packages run |
+| **network** | UDP outbound/inbound on your chosen local port; STUN access (UDP/3478 and friends) |
+| **RAM** | negligible. no history buffer beyond the visible scrollback |
+
+---
+
 ## 🚀 Quick Start
 
 ### install dependencies
-
 ```
 pip install textual cryptography
 ```
 
 ### run
-
 ```
 python3 p2pchat_tui.py
 ```
 
 ### what happens next
-
+0. the tool automatically checks your NAT type first. if it looks like a Symmetric-NAT/CGNAT, you'll get a warning and a chance to continue anyway or cancel.
 1. you're asked for a **local port** (like `55000`).
 2. the tool queries STUN and shows **your public IP:PORT** — send this to your peer over any channel (phone call, SMS, email, whatever).
 3. you enter **your peer's public IP:PORT** (they send you theirs the same way).
@@ -57,11 +64,10 @@ python3 p2pchat_tui.py
 > **note:** both peers need to be reachable via UDP hole punching. see [known limitations](#-known-limitations) for the one case this doesn't cover yet.
 
 ### in-chat keys
-
 | key | action |
 | --- | --- |
 | `Enter` | send message |
-| `/exit`, `exit`, `/quit`, `quit` | quit |
+| `/exit`, `/quit` | quit |
 | `Ctrl+C` | quit immediately |
 
 ---
@@ -108,7 +114,6 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 ## 🔒 security model
 
 ### what this tool protects against
-
 | threat | mitigation |
 | --- | --- |
 | **passive eavesdropping** | end-to-end AEAD encryption (ChaCha20-Poly1305); a network observer sees only ciphertext |
@@ -121,7 +126,6 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 | **DNS-level STUN blocking** | layered fallback across multiple providers, hostnames, and hardcoded IPs |
 
 ### what this tool does *not* protect against
-
 | limitation | notes |
 | --- | --- |
 | **no forward secrecy within a session** | the session's X25519 keypair is ephemeral per-run but not ratcheted per-message. compromise of that key while the session is still open exposes that session's traffic |
@@ -135,7 +139,6 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 ---
 
 ## 🏗️ architecture
-
 ```
    Peer A                                              Peer B
      │                                                    │
@@ -165,10 +168,9 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 | component | role |
 | --- | --- |
 | **`p2pcore.py`** | STUN client, `CryptoSession` (X25519/HKDF/ChaCha20-Poly1305), `ReplayGuard`, `RateLimiter`, `SecureReliableChannel` (ACK/retransmit + hole punching), handshake + shared interactive setup |
-| **`p2pchat_tui.py`** | full-screen `textual` `Application` (`ChatApp`) — status bar, confirmed-fingerprint bar, scrolling chat log, input line |
+| **`p2pchat_tui.py`** | full-screen `textual` `Application` (`ChatApp`) — status frame (WAITING/CONNECTED/DISCONNECTED, with ME/PEER/FINGERPRINT columns), scrolling chat log, input line |
 
 ### packet formats (post-handshake)
-
 | type | format | purpose |
 | --- | --- | --- |
 | `D` (data) | `b"D" + seq(4B) + ciphertext` | encrypted chat message |
@@ -182,8 +184,20 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 ## 📖 reference
 
 ### interactive setup prompts
-
 ```
+#=== NAT Check ===#
+[*] checking your NAT type before setup...
+
+  stun.l.google.com        -> 203.0.113.10:55000
+  stun1.l.google.com       -> 203.0.113.10:55000
+  ...
+
+[*] NAT type looks fine, let's setting up..
+OR
+[!] NAT looks like CGNAT, see the known limitations.
+do you want to try anyway? [y/n]: 
+
+
 #===== IP:PORT Exchange =====#
 local port to use (like 55000):
 >>> send this information to the other party: <your_public_ip>:<your_public_port>
@@ -195,7 +209,6 @@ shared passphrase (optional):
 ```
 
 ### fingerprint confirmation (mandatory)
-
 ```
 #===== FingerPrint Verification (Important) =====#
 [*] shared key fingerprint: XXXX-XXXX-XXXX-XXXX-XXXX
@@ -208,7 +221,6 @@ does this fingerprint match what the peer sees? [y/n]:
 answering anything other than `y`/`yes` aborts the connection.
 
 ### the TUI screen (`ChatApp`)
-
 | element | shows |
 | --- | --- |
 | status frame | border title shows `WAITING` / `CONNECTED` / `DISCONNECTED`; three columns inside show your address (green), peer's address (blue), and the fingerprint (purple) |
@@ -218,35 +230,22 @@ answering anything other than `y`/`yes` aborts the connection.
 connection status flips to `CONNECTED` only once a real decrypted chat message is received from the peer. a bare hole-punch keepalive packet is 'WAITING' status and is not enough. hole punching runs in a background thread from the start, independent of the UI.
 
 ### key `p2pcore.py` functions (for embedding/scripting)
-
 ```python
 from p2pcore import (
-    setup_connection,             # full interactive setup: port, STUN, peer address, passphrase, handshake
+    setup_connection,             # full interactive setup:  NAT check, port, STUN, peer address, passphrase, handshake
     confirm_fingerprint_or_raise, # blocks until user confirms fingerprint; raises RuntimeError on mismatch
     SecureReliableChannel,        # encrypted, reliable, replay-protected channel; takes on_message/on_status/on_disconnect callbacks
     CryptoSession,                # X25519 keypair + directional AEAD encrypt/decrypt
     perform_handshake,            # lower-level handshake if you want to skip the interactive prompts
     HandshakeAuthError,           # raised when a pre-shared passphrase check fails
     get_public_endpoint,          # raw STUN lookup
+    check_nat_type,               # standalone NAT-type check (Cone vs Symmetric) using multiple STUN servers
 )
 ```
 
 ---
 
-## 💻 system requirements
-
-| requirement | details |
-| --- | --- |
-| **python** | 3.9+ |
-| **dependencies** | `textual`, `cryptography` |
-| **OS** | Linux, macOS, Windows (anywhere Python + these two packages run) |
-| **network** | UDP outbound/inbound on your chosen local port; STUN access (UDP/3478 and friends) |
-| **RAM** | negligible. no history buffer beyond the visible scrollback |
-
----
-
 ## 📁 files
-
 | file | purpose |
 | --- | --- |
 | `p2pcore.py` | shared core: STUN client, cryptography (`CryptoSession`), replay protection (`ReplayGuard`), rate limiting (`RateLimiter`), reliable encrypted channel (`SecureReliableChannel`), handshake (`perform_handshake`), interactive setup (`setup_connection`, `confirm_fingerprint_or_raise`) |
@@ -257,9 +256,8 @@ no configuration files, no logs, no database. nothing is written to disk.
 ---
 
 ## ⚠️ known limitations
-
 - **no forward secrecy within a session** — one X25519 keypair per run, no per-message or periodic ratcheting.
-- **availability under symmetric NAT** — some carrier-grade NATs (CGNAT, common on mobile data) assign a different outbound port per destination. if the affected peer has access to their own Wi-Fi/router, manual port forwarding (or a better method if we find one) is being considered as a fallback, and we're actively testing and documenting this route. for anyone with no router/Wi-Fi access at all, the tool currently can't be used. we're working on finding a way to address this case too.
+- **availability under symmetric NAT** — some carrier-grade NATs (CGNAT, common on mobile data) assign a different outbound port per destination. the tool detects this automatically before setup and warns you (with the option to continue anyway or cancel), but plain STUN + hole punching still can't fix it. if the affected peer has access to their own Wi-Fi/router, manual port forwarding (or a better method if we find one) is being considered as a fallback, and we're actively testing and documenting this route, not deployed yet. for anyone with no router/Wi-Fi access at all, the tool currently can't be used.
 - **the live STUN list fetch is unauthenticated** — plain HTTPS fetch of a public GitHub list, used only as a lowest-priority fallback. a tampered entry can at worst mislead address discovery, not the encrypted chat itself.
 - **`P` (punch) packets are unauthenticated by design** — they carry no data, so spoofing them can only create NAT-state noise, not message compromise.
 - **the anti-replay window is fixed at 1024** — a legitimate but very late/reordered packet older than the window is rejected rather than delivered.
@@ -269,11 +267,9 @@ no configuration files, no logs, no database. nothing is written to disk.
 ---
 
 ## ⚠️ disclaimer
-
 this is an independent tool built around standard, well-reviewed cryptographic primitives (the `cryptography` library's implementations of X25519, HKDF, and ChaCha20-Poly1305). it has **not** undergone a formal third-party security audit. review the source yourself before relying on it for anything where the stakes are high, and treat the security model section above as the actual scope of what it protects against, not marketing copy.
 
 ---
 
 ## 📄 license
-
-MIT license.
+[MIT](LICENSE) license.

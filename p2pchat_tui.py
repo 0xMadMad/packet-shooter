@@ -350,7 +350,7 @@ class ChatApp(App):
         exit command (which quits the app) or a chat message (which gets
         encrypted/sent via the channel and echoed into the log).
         """
-        if text.lower() in ("/exit", "exit", "/quit", "quit"):
+        if text.lower() in ("/exit", "/quit"):
             self.exit()
             return
         self.channel.send(text)
@@ -373,7 +373,7 @@ class ChatApp(App):
             #self._append_line("[#999999 italic]* connection with the peer established. Chat is ready.[/]")
             self._append_line("[#999999 italic]* path to peer is open (still waiting for a message)...[/]")
         else:
-            self._append_line("[#999999 italic]* nothing received from the peer yet; still trying in the background.[/]")
+            self._append_line("[#ffaa00 italic]* nothing received from the peer yet; still trying in the background.[/]")
 
     def action_quit_app(self) -> None:
         """handler for the "quit_app" action bound to Ctrl+C. just exits the app."""
@@ -405,6 +405,9 @@ def main():
     except TimeoutError as e:
         print(f"\n[!] {e}")
         return
+    except RuntimeError as e:
+        print(f"\n[!] {e}")
+        return
 
     try:
         confirm_fingerprint_or_raise(crypto)
@@ -425,4 +428,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# _428
+# _431

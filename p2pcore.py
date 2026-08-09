@@ -614,9 +614,55 @@ def perform_handshake(sock, peer_addr, crypto:CryptoSession, timeout=30.0, passp
     return am_initiator
 
 
+def check_nat_type(local_port=None, log=print):
+    """
+    queries multiple independent STUN servers using the SAME local socket
+    to determine NAT type. if every server reports the same public port,
+    it's a Cone NAT (hole punching in this module should work). if ports
+    differ, it's a Symmetric-NAT/CGNAT, where plain STUN + hole punching
+    cannot establish a direct path (port-forwarding or any other way needed.. (not deployed yet)).
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", local_port or 0))
+
+    servers = STUN_PRIMARY + STUN_SECONDARY_HOSTNAMES
+    results = []
+    for host, port in servers:
+        try:
+            tx_id = os.urandom(12)
+            sock.settimeout(2.5)
+            sock.sendto(_build_stun_request(tx_id), (host, port))
+            data, _ = sock.recvfrom(2048)
+            parsed = _parse_stun_response(data, tx_id)
+            if parsed:
+                ip, pub_port = parsed
+                results.append((host, ip, pub_port))
+                log(f"  {host:<24} -> {ip}:{pub_port}")
+            else:
+                log(f"  {host:<24} -> (no response, skipped)")
+        except (socket.timeout, OSError):
+            log(f"  {host:<24} -> (no response, skipped)")
+
+    sock.close()
+
+    if len(results) < 2:
+        return {"error": "not enough responses to draw a conclusion"}
+
+    ports_seen = {r[2] for r in results}
+    ips_seen = {r[1] for r in results}
+    return {
+        "is_symmetric": len(ports_seen) > 1,
+        "results": results,
+        "ports_seen": ports_seen,
+        "ips_seen": ips_seen,
+    }
+
+
 def setup_connection(prompt_passphrase:bool=True, log=print):
     """
     shared interactive setup used by both the CLI and TUI front-ends:
+      0) run a NAT-type check; if it looks like a Symmetric NAT, ask the
+         user whether to continue anyway
       1) ask for a local port (with input validation/retry)
       2) bind a UDP socket and discover the public endpoint via STUN
       3) ask for the peer's public address
@@ -626,7 +672,27 @@ def setup_connection(prompt_passphrase:bool=True, log=print):
 
     returns (sock, peer_addr, crypto, my_addr_str)
     raises HandshakeAuthError or TimeoutError if the handshake fails
+    raises RuntimeError if the user declines to continue after a Symmetric NAT warning
     """
+
+    print("\n#=== NAT Check ===#")
+    print("[*] checking your NAT type before setup...\n")
+    nat_result = check_nat_type(log=log)
+
+    if "error" in nat_result:
+        print(f"\n[!] {nat_result['error']}")
+        print("    could not determine NAT type, continuing anyway..\n")
+    elif nat_result["is_symmetric"]:
+        print("\n[!] your connection looks like a Symmetric-NAT/CGNAT.")
+        print("    hole punching may NOT work reliably for you.")
+        print("    see the project's known limitations for details.\n")
+        answer = input("do you want to try anyway? [y/n]: ").strip().lower()
+        if answer not in ("y", "yes"):
+            raise RuntimeError("setup cancelled after Symmetric NAT warning.")
+        print()
+    else:
+        print("\n[*] NAT type looks fine, let's setting up..\n")
+
     local_port = _prompt_int("\n#===== IP:PORT Exchange =====#\nlocal port to use (like 55000): ")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -655,7 +721,7 @@ def setup_connection(prompt_passphrase:bool=True, log=print):
 
     crypto = CryptoSession()
     log("\n[*] exchanging encryption key with the peer (please wait)...")
-    perform_handshake(sock, peer_addr, crypto, timeout=60.0, passphrase=passphrase, log=log)
+    perform_handshake(sock, peer_addr, crypto, timeout=240.0, passphrase=passphrase, log=log)
 
     return sock, peer_addr, crypto, my_addr_str
 
@@ -688,4 +754,4 @@ def _prompt_int(message: str) -> int:
         except ValueError:
             print("please enter a valid whole number.")
 
-# _691
+# _757
