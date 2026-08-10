@@ -44,8 +44,8 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 ### option A: download the executable (no Python or any Dependency needed)
 download the [Latest](https://github.com/0xMadMad/packet-shooter/releases/latest) version and run it directly:
 - **Windows** — double-click `Packet Shooter v1.0.0.exe`
-- **Linux/macOS** — from a terminal, in the folder containing the file: `./"Packet Shooter v1.0.0"`
-> in Linux/macOS you may need to `chmod +x "Packet Shooter v1.0.0"` first
+- **Linux/macOS** — from a terminal, in the folder containing the file: `./"PacketShooter-v1.0.0"`
+> in Linux/macOS you may need to `chmod +x "PacketShooter-v1.0.0"` first
 
 ### option B: run from source
 #### install dependencies
