@@ -28,17 +28,6 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 
 ---
 
-## 💻 system requirements
-| requirement | details |
-| --- | --- |
-| **python** | 3.9+ |
-| **dependencies** | `textual`, `cryptography` |
-| **OS** | anywhere Python + these two packages run |
-| **network** | UDP outbound/inbound on your chosen local port; STUN access (UDP/3478 and friends) |
-| **RAM** | negligible. no history buffer beyond the visible scrollback |
-
----
-
 ## 🚀 quick start
 
 ### option A: download the executable (no Python or any Dependency needed)
