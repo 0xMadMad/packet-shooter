@@ -17,7 +17,7 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 
 ---
 
-## why packet-shooter?
+## why packet-shooter ❓
 - 🔐 **[true end-to-end encryption](#-cryptographic-core)** — X25519 key exchange + ChaCha20-Poly1305 AEAD, with directional subkeys so the two peers never share a key+nonce pair
 - 🕵️ **no relay, no server, no logs** — messages go straight from your socket to your peer's; there's no third machine in between that could log or leak anything
 - 🧾 **no accounts, no signup** — the only "identity" is an ephemeral keypair generated fresh for the session
