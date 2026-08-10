@@ -9,7 +9,7 @@ Two peers, A STUN lookup, A direct encrypted tunnel.  No account, No server, No 
 ![Language](https://img.shields.io/badge/language-Python_3.9+-yellow)
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
 
-[Quick Start](#-quick-start) • [Why packet-shooter?](#why-packet-shooter) • [Security Model](#-security-model) • [Architecture](#️-architecture) • [Reference](#-reference) • [Limitations](#-known-limitations)
+[Quick Start](#-quick-start) • [Features](#-features) • [Security Model](#-security-model) • [Architecture](#️-architecture) • [Reference](#-reference) • [Limitations](#-known-limitations)
 
 ---
 
@@ -39,7 +39,7 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 quick start
 
 ### option A: download the executable (no Python or any Dependency needed)
 download the [Latest](https://github.com/0xMadMad/packet-shooter/releases/latest) version and run it directly:
