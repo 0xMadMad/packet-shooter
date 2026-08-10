@@ -41,12 +41,19 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 
 ## 🚀 Quick Start
 
-### install dependencies
+### option A: download the executable (no Python or any Dependency needed)
+download the [Latest](https://github.com/0xMadMad/packet-shooter/releases/latest) version and run it directly:
+- **Windows** — double-click `Packet Shooter v1.0.0.exe`
+- **Linux/macOS** — from a terminal, in the folder containing the file: `./"Packet Shooter v1.0.0"`
+> in Linux/macOS you may need to `chmod +x "Packet Shooter v1.0.0"` first
+
+### option B: run from source
+#### install dependencies
 ```
 pip install textual cryptography
 ```
 
-### run
+#### run
 ```
 python3 p2pchat_tui.py
 ```
@@ -250,6 +257,7 @@ from p2pcore import (
 | --- | --- |
 | `p2pcore.py` | shared core: STUN client, cryptography (`CryptoSession`), replay protection (`ReplayGuard`), rate limiting (`RateLimiter`), reliable encrypted channel (`SecureReliableChannel`), handshake (`perform_handshake`), interactive setup (`setup_connection`, `confirm_fingerprint_or_raise`) |
 | `p2pchat_tui.py` | full-screen TUI front-end (`ChatApp` class) |
+| `build.py` | (maintainer use) builds the standalone executable via PyInstaller for each release |
 
 no configuration files, no logs, no database. nothing is written to disk.
 
