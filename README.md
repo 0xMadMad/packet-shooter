@@ -9,7 +9,7 @@ Two peers, A STUN lookup, A direct encrypted tunnel.  No account, No server, No 
 ![Language](https://img.shields.io/badge/language-Python_3.9+-yellow)
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
 
-[Quick Start](#-quick-start) • [Features](#-features) • [Security Model](#-security-model) • [Architecture](#️-architecture) • [Reference](#-reference) • [Limitations](#️-known-limitations)
+[Quick Start](#-quick-start) • [Features](#-features) • [Security Model](#-security-model) • [Architecture](#️-architecture) • [Reference](#-reference) • [Limitations](#️-known-limitations) • [Disclaimer](#️-disclaimer)
 
 ---
 
@@ -264,7 +264,11 @@ no configuration files, no logs, no database. nothing is written to disk.
 ---
 
 ## ⚠️ disclaimer
-this is an independent tool built around standard, well-reviewed cryptographic primitives (the `cryptography` library's implementations of X25519, HKDF, and ChaCha20-Poly1305). it has **not** undergone a formal third-party security audit. review the source yourself before relying on it for anything where the stakes are high, and treat the security model section above as the actual scope of what it protects against, not marketing copy.
+packet-shooter is an independent, educational, and research project built to explore P2P networking over UDP, NAT traversal, and cryptography.
+
+this tool uses trusted cryptographic methods from the `cryptography` library, including X25519, HKDF, and ChaCha20-Poly1305. however, it has not been formally audited by an independent security expert or company. before using it for anything important or sensitive, review the source code yourself.
+
+developers are not responsible for any misuse, illegal activity, damage, or consequences resulting from the use of this software.
 
 ---
 
