@@ -1,16 +1,19 @@
 """
 text user interface with:
   - continuous UDP hole punching in the background
-  - full-screen UI with textual (chat window + status bar + input line)
+  - full-screen UI with textual
+  - file transfer offers and progress bar
 
 requirements: pip install textual
 
 run:
-  python3 p2pchat_textual.py
+  python3 p2pchat_tui.py
 
 keys:
-  Enter                 send message
-  Ctrl+C or '/exit'     quit
+  Enter                      send message
+  Ctrl+C or '/exit'          quit
+  Ctrl+F or '/send' <path>   offer a file to the peer
+  Ctrl+Y / Ctrl+N            accept or reject an incoming file offer
 
 colors:
   blue:   #4da6ff
@@ -22,13 +25,12 @@ colors:
   white:  #eeeeee || #ffffff
 """
 
-
 import datetime
 import threading
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, Container, Horizontal
-from textual.widgets import Static, Input, RichLog
+from textual.widgets import Static, Input, RichLog, Button, ProgressBar
 from textual.reactive import reactive
 from textual import work
 
@@ -37,7 +39,12 @@ from p2pcore import (
     setup_connection,
     confirm_fingerprint_or_raise,
     HandshakeAuthError,
+    VERSION,
+    STEP_EXIT
 )
+
+from p2pfile import FileTransferManager, STEP_CHAT
+from p2pfile import WINDOW_SIZE as FILE_WINDOW_SIZE
 
 
 class StatusBar(Container):
@@ -108,7 +115,7 @@ class StatusBar(Container):
             state_text = f"[#00ff66]{dot}{state}[/]"
         else:
             state_text = f"{dot}{state}"
-        self.border_title = f" Packet Shooter v1.0.0  {state_text} "
+        self.border_title = f" Packet Shooter v{VERSION}  {state_text} "
 
     def compose(self) -> ComposeResult:
         """
@@ -139,14 +146,54 @@ class StatusBar(Container):
         )
 
 
+class TransferBar(Container):
+    """
+    bottom bar shown during a file offer or an active transfer.
+    hidden (display=False) until show_offer() is called; hides itself
+    again when hide() is called (no pending offers, no active transfer).
+    """
+
+    def compose(self):
+        yield Static("", id="transfer-label")
+        yield ProgressBar(id="transfer-progress", show_eta=False)
+        yield Horizontal(
+            Button("Accept (^Y)", id="accept-btn", variant="success"),
+            Button("Reject (^N)", id="reject-btn", variant="error"),
+            id="transfer-actions",
+        )
+
+    def on_mount(self) -> None:
+        self.display = False
+
+    def show_offer(self, name: str, file_size: int) -> None:
+        self.display = True
+        self.query_one("#transfer-label", Static).update(f"Incoming: {name} ({file_size:,} bytes)")
+        bar = self.query_one("#transfer-progress", ProgressBar)
+        bar.display = False
+        self.query_one("#transfer-actions", Horizontal).display = True
+
+    def update_progress(self, done: int, total: int) -> None:
+        self.display = True
+        self.query_one("#transfer-actions", Horizontal).display = False
+        pct = int(100 * done / total) if total else 0
+        label = self.query_one("#transfer-label", Static)
+        label.update(f"Transferring... {pct}% ({done}/{total} chunks)")
+        bar = self.query_one("#transfer-progress", ProgressBar)
+        bar.display = True
+        bar.update(total=100, progress=pct)
+
+    def hide(self) -> None:
+        self.display = False
+
+
 class ChatApp(App):
     """
     main textual application.
 
-    owns the full-screen layout (status frame + chat log + input
-    line), wires the encrypted network channel (SecureReliableChannel) to
-    the UI via callbacks, and handles user input, thread-safety for
-    background network events, and clean shutdown.
+    owns the full-screen layout (status frame + chat log + transfer bar +
+    input line), wires the encrypted network channel (SecureReliableChannel) and the 
+    FileTransferManager to the UI via callbacks, and handles user input, thread-safety 
+    for background network events, and clean shutdown.
     """
 
     CSS = """
@@ -225,11 +272,43 @@ class ChatApp(App):
             border: none;
             height: 1;
         }
+
+        /* file transfer bar (offer/progress), hidden by default */
+        TransferBar {
+            background: black;
+            border: round #ffaa00;
+            height: 5;
+            padding: 0 1;
+        }
+
+        #transfer-label {
+            color: #ffaa00;
+            height: 1;
+        }
+
+
+        #transfer-actions {
+            height: 1;
+            align: right middle;
+        }
+
+        #transfer-actions Button {
+            min-width: 12;
+            height: 1;
+            margin: 0 0 0 1;
+        }
+
+        #transfer-progress {
+            height: 1;
+        }
     """
 
     # Ctrl+C is bound to the "quit_app" action (defined below as action_quit_app) instead of textual's default Ctrl+C handling
     BINDINGS = [
         ("ctrl+c", "quit_app", "Quit"),
+        ("ctrl+f", "pick_file", "Send file"),
+        ("ctrl+y", "accept_offer", "Accept file"),
+        ("ctrl+n", "reject_offer", "Reject file"),
     ]
 
     def __init__(self, sock, peer_addr, crypto, my_addr_str):
@@ -243,24 +322,36 @@ class ChatApp(App):
         self.channel = SecureReliableChannel(
             sock, peer_addr, crypto,
             on_message=self._on_peer_message,
+            replay_window=FILE_WINDOW_SIZE * 100,  # comfortably above the file-transfer in-flight window (see p2pfile.py)
             on_status=self._on_status,
-            on_disconnect=self._on_peer_disconnect  
+            on_disconnect=self._on_peer_disconnect,
+        )
+
+        self._pending_offers = []    # FIFO of (transfer_id, name, file_size); appended from the network thread, popped from the UI thread.
+        self._active_transfer_id = None  # transfer currently shown in the progress bar
+        self.file_manager = FileTransferManager(
+            self.channel,
+            on_progress = self._on_file_progress,
+            on_offer = self._on_file_offer,
+            on_result = self._on_file_result,
         )
 
     # ---------------- layout ----------------
     def compose(self) -> ComposeResult:
         """
         textual layout hook for the whole app; builds the
-        StatusBar, the RichLog (scrolling chat history), and the Input
+        StatusBar, the RichLog (scrolling chat history), TransferBar (file offers/progress), and the Input
         (message entry line), then yields them stacked vertically.
         """
         self.status_bar = StatusBar(self.my_addr_str, self.peer_addr, self.crypto.fingerprint(), id="status-frame")
         self.chat_log = RichLog(wrap=True, markup=True, highlight=False)
+        self.transfer_bar = TransferBar(id="transfer-bar")
         self.input_line = Input(placeholder="> type message and press Enter")
 
         yield Vertical(
             self.status_bar,
             self.chat_log,
+            self.transfer_bar,
             self.input_line,
         )
 
@@ -301,25 +392,37 @@ class ChatApp(App):
         self.connected = value
         self.call_from_thread(setattr, self.status_bar, "connected", value)
 
-    def _on_peer_message(self, text:str, addr) -> None:
+    def _on_peer_message(self, payload: bytes, addr) -> None:
         """
         callback passed to SecureReliableChannel as on_message.
-        fires whenever a real decrypted chat message arrives from the
-        peer. marks us as connected and writes the message to the log.
-        
-        ** NOTE deliberately not named _on_message. textual reserves that
-        exact name on App/Widget as its internal message-dispatch hook
-        (used for framework events like Unmount), so defining our own
-        _on_message here would silently override it and break shutdown. **
+        fires whenever a real decrypted plaintext arrives from the peer.
+        STEP_CHAT is handled as a chat message; all other payloads are
+        passed to the file-transfer manager.
         """
+
+        # NOTE: deliberately not named _on_message. textual reserves that
+        # exact name on App/Widget as its internal message-dispatch hook
+        # (used for framework events like Unmount), so defining our own
+        # _on_message here would silently override it and break shutdown.
+        
         self._set_connected(True)
-        self._append_line(f"[#4da6ff][{self._timestamp()}] PEER > {text}[/]")
+
+        if not payload:
+            return
+
+        if payload[0] == STEP_CHAT:
+            text = payload [1:].decode("utf-8", errors="ignore")
+            self._append_line(f"[#4da6ff][{self._timestamp()}] PEER > {text}[/]")
+        elif payload[0] == STEP_EXIT:
+            self._on_peer_disconnect("peer closed the connection")
+        else:
+            self.file_manager.handle_payload(payload, addr)
 
     def _on_peer_disconnect(self, reason:str) -> None:
         """
         callback passed to SecureReliableChannel as on_disconnect.
-        fires when the peer signals it's leaving (e.g. sent an "X" packet
-        on exit), flips us back to disconnected and logs why.
+        fires when the peer signals it's leaving (e.g. sent an encrypted
+        STEP_EXIT payload on exit), flips us back to disconnected and logs why.
         """
         self._set_connected(False)
         self._append_line(f"[#ff5555 bold][{self._timestamp()}] * peer disconnected; {reason}[/]")
@@ -346,25 +449,33 @@ class ChatApp(App):
 
     def _handle_input(self, text:str) -> None:
         """
-        processes one submitted line of user input. either an
-        exit command (which quits the app) or a chat message (which gets
-        encrypted/sent via the channel and echoed into the log).
+        processes one submitted line of user input:
+        exit command, /send <path> to offer a file, or plain chat message.
         """
         if text.lower() in ("/exit", "/quit"):
             self.exit()
             return
-        self.channel.send(text)
+
+        if text.startswith("/send "):
+            path = text[len("/send "):].strip()
+            self._start_send(path)
+            return
+        
+        try:
+            self.channel.send(bytes([STEP_CHAT]) + text.encode("utf-8"))
+        except RuntimeError as e:
+            self._append_line(f"[#ff5555 italic]* {e}[/]")
+            return
         self._append_line(f"[#00ff66][{self._timestamp()}] ME   > {text}[/]")
 
     @work(thread=True)
     def _background_setup(self) -> None:
         """
-        runs in a background worker thread (via @work(thread=True)
-        so it doesn't block the UI). starts continuous UDP hole punching
+        runs in a background worker thread (via @work(thread=True) so 
+        it doesn't block the UI). starts continuous UDP hole punching
         and blocks waiting for any packet from the peer, up to 120s, then
-        logs the outcome. does NOT mark us as "connected" by itself. that
-        only happens once a real message arrives via
-        _on_peer_message, see the commented-out lines below.
+        logs the outcome. reaching the peer does not mark the chat as
+        connected; the connected state is set when a real decrypted message arrives.
         """
         self._append_line("[#999999 italic]* opening the path (hole punching) in the background...[/]")
         self.channel.start_background_punch()
@@ -374,6 +485,96 @@ class ChatApp(App):
             self._append_line("[#999999 italic]* path to peer is open (still waiting for a message)...[/]")
         else:
             self._append_line("[#ffaa00 italic]* nothing received from the peer yet; still trying in the background.[/]")
+
+    def _start_send(self, path:str) -> None:
+        """kicks off an outgoing file offer from a path the user gave us."""
+        if not path:
+            self._append_line("[#ff5555 italic]* usage: /send <path>[/]")
+            return
+        transfer_id = self.file_manager.send_file(path)
+        if transfer_id is None:
+            self._append_line(f"[#ff5555 italic]* file not found: {path}[/]")
+            return
+        self._append_line(f"[#999999 italic]* offering file: {path}[/]")
+
+    def action_pick_file(self) -> None:
+        """Ctrl+F: prompts for a path in the input line as a quick file picker."""
+        self.input_line.value = "/send "
+        self.input_line.focus()
+        self.input_line.cursor_position = len(self.input_line.value)
+
+    def action_accept_offer(self) -> None:
+        """'ctrl+y' keybinding: accepts the oldest pending offer, if any."""
+        self._resolve_offer(accept=True)
+
+    def action_reject_offer(self) -> None:
+        """'ctrl+n' keybinding: rejects the oldest pending offer, if any."""
+        self._resolve_offer(accept=False)
+
+    def on_button_pressed(self, event:Button.Pressed) -> None:
+        """handles clicks on the TransferBar's Accept and Reject buttons."""
+        if event.button.id == "accept-btn":
+            self._resolve_offer(accept=True)
+        elif event.button.id == "reject-btn":
+            self._resolve_offer(accept=False)
+
+    def _resolve_offer(self, accept:bool) -> None:
+        if not self._pending_offers:
+            return
+        transfer_id, name, file_size = self._pending_offers.pop(0)
+        if accept:
+            self.file_manager.accept_transfer(transfer_id)
+            self._append_line(f"[#999999 italic]* accepted {name}[/]")
+        else:
+            self.file_manager.reject_transfer(transfer_id)
+            self._append_line(f"[#999999 italic]* rejected {name}[/]")
+        self._show_next_offer_or_hide()
+
+    def _show_next_offer_or_hide(self) -> None:
+        if self._pending_offers:
+            transfer_id, name, file_size = self._pending_offers[0]
+            self.transfer_bar.show_offer(name, file_size)
+        elif self._active_transfer_id is None:
+            self.transfer_bar.hide()
+
+    def _on_file_offer(self, transfer_id:int, name:str, file_size:int) -> None:
+        """
+        callback passed to FileTransferManager as on_offer. always runs on
+        the network thread; queues the offer and shows the TransferBar if
+        it's the only one pending.
+        """
+        self._pending_offers.append((transfer_id, name, file_size))
+        self._append_line(f"[#ffaa00 italic]* incoming file offer: {name} ({file_size:,} bytes)[/]")
+        if len(self._pending_offers) == 1:
+            self.call_from_thread(self.transfer_bar.show_offer, name, file_size)
+
+    def _on_file_progress(self, transfer_id:int, direction:str, done:int, total:int) -> None:
+        """
+        callback passed to FileTransferManager as on_progress. always runs
+        on the network thread. only the first transfer to report progress
+        (self._active_transfer_id) drives the TransferBar; other concurrent
+        transfers still complete but their progress is not displayed.
+        """
+        if self._active_transfer_id is None:
+            self._active_transfer_id = transfer_id
+        if transfer_id != self._active_transfer_id:
+            return  # only show one transfer's progress at a time; others still complete in the background
+        self.call_from_thread(self.transfer_bar.update_progress, done, total)
+
+    def _on_file_result(self, transfer_id, direction:str, ok:bool, name:str) -> None:
+        """
+        callback passed to FileTransferManager as on_result. always runs on
+        the network thread. logs the outcome and, if this was the transfer
+        currently shown in the TransferBar, clears it and reveals the next
+        queued offer, if any.
+        """
+        verb = "sent" if direction == "send" else "received"
+        color = "#00ff66" if ok else "#ff5555"
+        status = verb if ok else f"{verb} FAILED"
+        self._append_line(f"[{color} italic]* file {status}: {name}[/]")
+        if transfer_id == self._active_transfer_id:
+            self._active_transfer_id = None
+            self.call_from_thread(self._show_next_offer_or_hide)
 
     def action_quit_app(self) -> None:
         """handler for the "quit_app" action bound to Ctrl+C. just exits the app."""
@@ -390,13 +591,13 @@ class ChatApp(App):
 
 def main():
     """
-    entry point. runs the plain-print setup flow (STUN, peer
-    address, passphrase, handshake) before any full-screen UI exists,
-    then requires manual fingerprint confirmation, then launches the
-    textual ChatApp. always closes the socket on the way out.
+    application entry point.
+    runs the interactive connection setup and manual fingerprint verification
+    before creating the Textual UI, then launches ChatApp and closes the
+    socket when the application exits.
     """
     
-    print("\n\n#=== SETTING UP Packet Shooter v1.0.0 ===#\n")
+    print(f"\n\n#=== SETTING UP Packet Shooter v{VERSION} ===#\n")
     try:
         sock, peer_addr, crypto, my_addr_str = setup_connection()
     except HandshakeAuthError as e:
@@ -428,4 +629,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# _431
+# _632

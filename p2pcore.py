@@ -1,5 +1,5 @@
 """
-#============================ unresaan - v1.0.0 ============================#
+#============================ Packet Shooter - v2.0.0 ============================#
 includes:
   - STUN resistant to DNS filtering
   - manual X25519 (ECDH) key exchange + fingerprint to prevent MITM
@@ -13,10 +13,12 @@ includes:
   - replay attack protection (anti-replay window on message counter)
   - reliability layer over UDP (ACK/Retransmit)
   - continuous UDP hole punching in the background
-  - basic rate limiting against forged/garbage packet floods
+  - step-byte framing on every payload (chat vs file-transfer protocol)
 
 requirements: pip install cryptography
 """
+
+VERSION = "2.0.0"
 
 import socket           # TCP/UDP networking (UDP in here)
 import struct           # pack/unpack data into/from binary
@@ -213,7 +215,7 @@ class CryptoSession:
     def fingerprint(self) -> str:
         """
         returns short and readable fingerprint for manual comparison (anti-MITM)
-        this is computed from the *derived shared key* (available only
+        this is computed from the two derived directional keys (available only
         after derive_shared_key), not just the local public key, so a
         match confirms both parties really landed on the same shared
         secret rather than just exchanging plausible-looking keys.
@@ -312,11 +314,15 @@ class ReplayGuard:
     similar to the anti-replay mechanism in IPsec/TLS
       - messages with a seq much older than the highest seq seen are rejected
       - each seq is accepted only once; a repeat (even if valid) is rejected
+    WINDOW_SIZE must stay comfortably larger than any application-level in-flight
+    window (e.g. a file-transfer sliding window), otherwise out-of-order arrivals 
+    fall outside the window and get dropped as "too old".
     """
 
-    WINDOW_SIZE = 1024
+    DEFAULT_WINDOW_SIZE = 4096
 
-    def __init__(self):
+    def __init__(self, window_size=None):
+        self.window_size = window_size or self.DEFAULT_WINDOW_SIZE
         self.highest_seq = -1  # no seq at start (real seq starts at 0)
         self.seen_bitmap = set()  # all seen seqs (set() because each seq is unique, set() gives O(1) at checks)
         self.lock = threading.Lock()  # only one thread can call
@@ -327,11 +333,11 @@ class ReplayGuard:
             if seq > self.highest_seq:
                 self.highest_seq = seq
                 self.seen_bitmap.add(seq)
-                cutoff = self.highest_seq - self.WINDOW_SIZE  # anything at or below this is now too old (outside the window)
-                if len(self.seen_bitmap) > self.WINDOW_SIZE * 2:  # ensures it does not become INF, control it's size
+                cutoff = self.highest_seq - self.window_size  # anything at or below this is now too old (outside the window)
+                if len(self.seen_bitmap) > self.window_size * 2:  # ensures it does not become INF, control it's size
                     self.seen_bitmap = {s for s in self.seen_bitmap if s > cutoff}
                 return True
-            if seq <= self.highest_seq - self.WINDOW_SIZE:
+            if seq <= self.highest_seq - self.window_size:
                 return False  # too old, outside the window
             if seq in self.seen_bitmap:
                 return False  # already seen -> replay
@@ -344,6 +350,8 @@ class RateLimiter:
     simple token-bucket-ish limiter to blunt floods of garbage/forged
     packets (e.g. many 'D' packets with invalid ciphertext, which would
     otherwise each cost a decryption attempt).
+
+    currently instantiated but not enforced (see SecureReliableChannel._receiver_loop).
     """
 
     def __init__(self, max_events:int, per_seconds:float):
@@ -365,53 +373,82 @@ class RateLimiter:
 
 
 # ================== Reliability layer + encryption over UDP ==================
-
+STEP_EXIT = 0x08  # step byte for the authenticated (encrypted) exit signal, sent via SecureReliableChannel.send() instead of the unauthenticated 'X' UDP packet
 class SecureReliableChannel:
     """
     reliability layer (ACK/Retransmit) + AEAD encryption + anti-replay.
-
+    
     packet formats (after handshake):
       type 'D' (Data):  b"D" + seq(4 bytes) + ciphertext
       type 'A' (Ack):   b"A" + seq(4 bytes)
-      type 'P' (Punch): b"P"        -- unencrypted, only used to keep the NAT open
+      type 'P' (Punch): b"P"   --unencrypted, only used to keep the NAT open
 
-    note: 'P' messages carry no data, so they don't need encryption.
+    note: 'P' carries no data and is not authenticated; a spoofed 'P' can
+    only create NAT-state noise, not affect the encrypted stream. the
+    graceful-exit signal is sent as an encrypted STEP_EXIT payload through
+    send()/on_message, not as a bare packet type, so it cannot be spoofed.
+
+    decrypted plaintext is delivered to on_message as raw bytes, with no
+    interpretation of its content; callers define their own framing.
     """
 
-    # max invalid/undecryptable data packets accepted per window before further ones are silently dropped without even attempting decryption
+    # counts only decrypt failures (see _receiver_loop), not valid data packets, so
+    # a legitimate high-throughput stream (e.g. file-transfer chunks) never trips this
     INVALID_PACKET_LIMIT = 20
     INVALID_PACKET_WINDOW = 5.0
 
-    def __init__(self, sock, peer_addr, crypto:CryptoSession, on_message, on_status=None, on_disconnect=None):
+    # hard stop well before the 32-bit seq wraps (2**32); at this point the caller must perform
+    # a fresh handshake and build a new channel instead of continuing to send on this one
+    SEQ_REKEY_THRESHOLD = 2**31
+
+    def __init__(self, sock, peer_addr, crypto:CryptoSession, on_message, on_status=None, on_disconnect=None, replay_window=None):
         self.sock = sock
         self.peer_addr = peer_addr
         self.crypto = crypto  # must already have a completed handshake
         self.on_message = on_message
+        self.replay_window = replay_window
         self.on_status = on_status or (lambda *_: None)
         self.on_disconnect = on_disconnect or (lambda *_: None)
+        # replay_window lets an application-level caller (e.g. one with a larger in-flight window than ReplayGuard's default) widen the
+        # anti-replay window so its own out-of-order traffic doesn't fall outside it and get dropped as "too old"
 
         self.send_seq = 0  # counter for outgoing messages, starts at 0
-        self.pending = {}  # {seq: [packet, timestamp, tries]}, unacked messages, a list so entry[1]/entry[2] can be updated in place
+        self.pending = {}  # {seq: [packet, timestamp, tries, on_ack]}, unacked messages, a list so entry[1]/entry[2] can be updated in place
         self.lock = threading.Lock()
         self.running = True  # flips to False with stop(), all loops check this
         self.peer_seen = threading.Event()  # set the moment ANY packet arrives from peer, even a punch packet
 
         # separate instance per channel, each chat session tracks its own replay/rate-limit state
-        self.replay_guard = ReplayGuard()
+        self.replay_guard = ReplayGuard(window_size=self.replay_window)
         self._invalid_limiter = RateLimiter(self.INVALID_PACKET_LIMIT, self.INVALID_PACKET_WINDOW)
 
         threading.Thread(target=self._receiver_loop, daemon=True).start()
         threading.Thread(target=self._retransmit_loop, daemon=True).start()
 
-    def send(self, text:str):
-        """encrypts text and sends it, keeps it in pending until acked"""
+    def send(self, data, on_ack=None):
+        """
+        encrypts data and sends it, keeps it in pending until acked.
+        data can be str or bytes. the caller is responsible for any framing (e.g. a leading step byte), this 
+        method sends the bytes as given, with no interpretation of their content.
+        'on_ack' is an optional callback invoked as on_ack(True) once the peer acks this specific seq, or 
+        on_ack (False) if retransmission gives up (see_retransmit_loop). runs on the receiver/retransmit thread,
+        keep it short. returns the seq assigned to this message.
+        """
+        if isinstance(data, str):
+            data = data.encode("utf-8")
         with self.lock:
-            seq = self.send_seq
+            if self.send_seq >= self.SEQ_REKEY_THRESHOLD:
+                raise RuntimeError(
+                    "session has sent too many messages; re-handshake required "
+                    "before the 32-bit sequence counter can overflow"
+                )
+            seq = self.send_seq  # 32-bit on the wire ("!I")
             self.send_seq += 1
-            ciphertext = self.crypto.encrypt(seq, text.encode("utf-8"))
+            ciphertext = self.crypto.encrypt(seq, data)
             packet = b"D" + struct.pack("!I", seq) + ciphertext
-            self.pending[seq] = [packet, time.time(), 0]
-        self.sock.sendto(packet, self.peer_addr)
+            self.pending[seq] = [packet, time.time(), 0, on_ack]
+        self.sock.sendto (packet, self.peer_addr)
+        return seq
 
     def _receiver_loop(self):
         """runs forever, handles D/A/P packets as they arrive"""
@@ -426,15 +463,13 @@ class SecureReliableChannel:
             if len(data) < 1:  # empty packet, can't even read the type byte
                 continue
 
-            if addr == self.peer_addr:
-                self.peer_seen.set()  # set before checking packet type, even a bare punch packet counts as "peer is reachable"
+            if addr != self.peer_addr:
+                continue  # only the confirmed peer may drive our state
+            self.peer_seen.set()
 
             kind = data[0:1]
             if kind == b"P":  # arriving is the whole point
                 continue  # nothing else to do
-            elif kind == b"X":  # peer sent a graceful "I'm leaving" signal (see stop())
-                self.on_disconnect("peer closed the connection")
-                continue
             elif kind == b"D" and len(data) >= 5:
                 seq = struct.unpack("!I", data[1:5])[0]
                 ciphertext = data[5:]
@@ -445,41 +480,50 @@ class SecureReliableChannel:
                 if not self.replay_guard.check_and_update(seq):
                     continue  # too old or already seen
 
-                if not self._invalid_limiter.allow():
-                    continue  # too many bad packets recently, drop without spending more CPU on decryption attempts until the window clears
-
                 try:
                     plaintext = self.crypto.decrypt(seq, ciphertext)
                 except Exception:
+                    if not self._invalid_limiter.allow():
+                        continue  # too many recent decrypt failures, drop silently now
                     self.on_status(f"[Warning] an invalid/tampered packet was dropped (seq={seq})")
                     continue
 
-                text = plaintext.decode("utf-8", errors="ignore")
-                self.on_message(text, addr)
+                self.on_message(plaintext, addr)
 
             elif kind == b"A" and len(data) >= 5:
                 seq = struct.unpack("!I", data[1:5])[0]
                 with self.lock:
-                    self.pending.pop(seq, None)  # if it's ACK, pops seq from pending list (pop because it ignores errors if seq was deleted before)
+                    entry = self.pending.pop(seq, None)
+                if entry and entry[3]:
+                    entry[3](True)    # runs on the receiver thread; keep callbacks fast. anything slow here (e.g. file I/O) delays receiving further packets
 
     def _retransmit_loop(self):
-        """checks all pendings"""
+        """periodically checks unacknowledged packets and retransmits them until they are acknowledged or the retry limit is reached."""
         while self.running:
             time.sleep(0.5)
             now = time.time()
+            failed_callbacks = []
             with self.lock:
                 for seq, entry in list(self.pending.items()):  # use list() to work on copy, because may pops from pending inside this same loop
-                    packet, ts, tries = entry
+                    packet, ts, tries, on_ack = entry
                     if now - ts > 1.0: # try every one second
                         if tries >= 8: # for 8 tries  (+1 try to see the condition is not met)
-                            self.pending.pop(seq, None)  # gives up silently
+                            self.pending.pop(seq, None)  # gives up
+                            failed_callbacks.append(on_ack)
                             continue
                         self.sock.sendto(packet, self.peer_addr)  # retry
                         entry[1] = now
                         entry[2] = tries + 1
+            for on_ack in failed_callbacks:
+                if on_ack:
+                    on_ack(False)
 
     def start_background_punch(self, active_interval=1.5, idle_keepalive_interval=20.0):
-        """sends P packets to keep the NAT path open"""
+        """
+        continuously sends unencrypted P packets to open and keep the UDP/NAT
+        path alive; sends them more frequently while the peer has not been seen
+        yet, then switches to a slower keep-alive interval.
+        """
         def loop():
             while self.running:
                 self.sock.sendto(b"P", self.peer_addr)
@@ -498,13 +542,16 @@ class SecureReliableChannel:
         """
         flips running to False so all loops stop themselves; also tells
         the peer we're leaving (unless notify_peer=False), so it can show
-        a disconnect state instead of just going silent.
+        a disconnect state instead of just going silent. the exit signal
+        is sent as an authenticated payload (STEP_EXIT) through the
+        encrypted channel rather than as a bare unauthenticated packet,
+        so a spoofed source address can no longer fake a disconnect.
         """
-        if notify_peer:
+        if notify_peer and self.crypto.send_aead is not None:
             try:
-                self.sock.sendto(b"X", self.peer_addr)
-            except OSError:
-                pass  # socket might already be in a bad state on the way out, not fatal here
+                self.send(bytes([STEP_EXIT]))
+            except Exception:
+                pass  # best-effort; nothing to do if this fails on the way out
         self.running = False
 
 
@@ -660,7 +707,7 @@ def check_nat_type(local_port=None, log=print):
 
 def setup_connection(prompt_passphrase:bool=True, log=print):
     """
-    shared interactive setup used by both the CLI and TUI front-ends:
+    interactive connection setup used by the Textual frontend:
       0) run a NAT-type check; if it looks like a Symmetric NAT, ask the
          user whether to continue anyway
       1) ask for a local port (with input validation/retry)
@@ -754,4 +801,4 @@ def _prompt_int(message: str) -> int:
         except ValueError:
             print("please enter a valid whole number.")
 
-# _757
+# _804

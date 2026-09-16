@@ -4,7 +4,7 @@
 
 Two peers, A STUN lookup, A direct encrypted tunnel.  No account, No server, No relay to trust.
 
-![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)
+![Version](https://img.shields.io/badge/version-2.0.0-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Language](https://img.shields.io/badge/language-Python_3.9+-yellow)
 ![Crypto](https://img.shields.io/badge/crypto-X25519_%2B_ChaCha20--Poly1305-purple)
@@ -32,9 +32,9 @@ packet-shooter connects two peers **directly** over UDP. no middle server, ever.
 
 ### option A: download the executable (no Python or any Dependency needed)
 download the [Latest](https://github.com/0xMadMad/packet-shooter/releases/latest) version and run it directly:
-- **Windows** — double-click `Packet Shooter v1.0.0.exe`
-- **Linux/macOS** — from a terminal, in the folder containing the file: `./"PacketShooter-v1.0.0"`
-> in Linux/macOS you may need to `chmod +x "PacketShooter-v1.0.0"` first
+- **Windows** — double-click `Packet Shooter v2.0.0.exe`
+- **Linux/macOS** — from a terminal, in the folder containing the file: `./"PacketShooter-v2.0.0"`
+> in Linux/macOS you may need to `chmod +x "PacketShooter-v2.0.0"` first
 
 ### option B: run from source
 #### install dependencies
@@ -65,6 +65,8 @@ python3 p2pchat_tui.py
 | `Enter` | send message |
 | `/exit`, `/quit` | quit |
 | `Ctrl+C` | quit immediately |
+| `Ctrl+F` or `/send <path>` | offer a file to the peer |
+| `Ctrl+Y` / `Ctrl+N` (or on-screen buttons) | accept/reject an incoming file offer |
 
 ---
 
@@ -83,7 +85,7 @@ python3 p2pchat_tui.py
 - **deterministic role assignment** — initiator/responder roles fall out of a plain comparison of the two public keys, so both sides agree on directional key assignment with no extra round-trip
 
 ### 🔁 replay protection
-a sliding anti-replay window (1024 messages wide) tracks the highest sequence number seen and rejects:
+a sliding anti-replay window (sized to comfortably exceed the largest in-flight window in use, derived from the file-transfer chunk window) tracks the highest sequence number seen and rejects:
 
 - any sequence number far older than the current window (stale/replayed)
 - any sequence number already seen once (exact replay)
@@ -96,6 +98,12 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 - every data packet is retried up to 8 times, 1 second apart, until acknowledged
 - ACKs are sent even for packets that turn out to be replays. a lost ACK shouldn't make a legitimate retransmit look like an attack
 - no connection state machine beyond the crypto handshake, just enough reliability to make chat usable
+
+### 📁 file transfer
+- **step-byte payload framing** — every payload sent over the channel starts with a one-byte tag distinguishing chat from file-transfer protocol messages
+- **offer/accept/reject flow** — the receiver must explicitly accept before any file data is sent
+- **sliding-window chunked transfer** — up to 48 chunks in flight at once, each independently acked/retransmitted, instead of one-chunk-at-a-time
+- **SHA-256 integrity check** — the full file hash is sent with the offer and verified after reassembly before the received file is kept
 
 ### 🕳️ NAT traversal
 - **layered STUN fallback** — tries Google/Cloudflare first, then a community-maintained live server list fetched from GitHub, then a hardcoded static IP list, then secondary hostnames. resilient to DNS-level blocking of any single provider
@@ -165,14 +173,14 @@ raw UDP drops and reorders packets, so a lightweight ACK/retransmit layer sits d
 | --- | --- |
 | **`p2pcore.py`** | STUN client, `CryptoSession` (X25519/HKDF/ChaCha20-Poly1305), `ReplayGuard`, `RateLimiter`, `SecureReliableChannel` (ACK/retransmit + hole punching), handshake + shared interactive setup |
 | **`p2pchat_tui.py`** | full-screen `textual` `Application` (`ChatApp`) — status frame (WAITING/CONNECTED/DISCONNECTED, with ME/PEER/FINGERPRINT columns), scrolling chat log, input line |
+| **`p2pfile.py`** | `FileTransferManager` — offer/accept/reject flow, chunked sliding-window upload, hash-verified reassembly on receive |
 
 ### packet formats (post-handshake)
 | type | format | purpose |
 | --- | --- | --- |
-| `D` (data) | `b"D" + seq(4B) + ciphertext` | encrypted chat message |
+| `D` (data) | `b"D" + seq(4B) + ciphertext` | encrypted payload. decrypts to a chat message, a graceful-exit signal, or a file-transfer protocol message, distinguished by a leading step byte |
 | `A` (ACK) | `b"A" + seq(4B)` | acknowledges receipt of a `D` packet |
 | `P` (punch) | `b"P"` | unencrypted NAT keepalive, no payload |
-| `X` (exit) | `b"X"` | unencrypted graceful-disconnect signal, sent when a peer exits cleanly (Ctrl+C or `/exit`) |
 | `H` (handshake) | `b"H" + pubkey(32B)` **or** `b"H" + pubkey(32B) + hmac_tag(32B)` | key exchange, with optional passphrase authentication |
 
 ---
@@ -236,6 +244,7 @@ from p2pcore import (
     HandshakeAuthError,           # raised when a pre-shared passphrase check fails
     get_public_endpoint,          # raw STUN lookup
     check_nat_type,               # standalone NAT-type check (Cone vs Symmetric) using multiple STUN servers
+    VERSION,                      # current version string, e.g. "2.0.0"
 )
 ```
 
@@ -246,6 +255,7 @@ from p2pcore import (
 | --- | --- |
 | `p2pcore.py` | shared core: STUN client, cryptography (`CryptoSession`), replay protection (`ReplayGuard`), rate limiting (`RateLimiter`), reliable encrypted channel (`SecureReliableChannel`), handshake (`perform_handshake`), interactive setup (`setup_connection`, `confirm_fingerprint_or_raise`) |
 | `p2pchat_tui.py` | full-screen TUI front-end (`ChatApp` class) |
+| `p2pfile.py` | file-transfer layer on top of `SecureReliableChannel`. chunked offer/accept/reject/chunk/done/result protocol with a sliding send window |
 | `build.py` | (maintainer use) builds the standalone executable via PyInstaller for each release |
 
 no configuration files, no logs, no database. nothing is written to disk.
@@ -257,9 +267,9 @@ no configuration files, no logs, no database. nothing is written to disk.
 - **availability under symmetric NAT** — some carrier-grade NATs (CGNAT, common on mobile data) assign a different outbound port per destination. the tool detects this automatically before setup and warns you (with the option to continue anyway or cancel), but plain STUN + hole punching still can't fix it. if the affected peer has access to their own Wi-Fi/router, manual port forwarding (or a better method if we find one) is being considered as a fallback, and we're actively testing and documenting this route, not deployed yet. for anyone with no router/Wi-Fi access at all, the tool currently can't be used.
 - **the live STUN list fetch is unauthenticated** — plain HTTPS fetch of a public GitHub list, used only as a lowest-priority fallback. a tampered entry can at worst mislead address discovery, not the encrypted chat itself.
 - **`P` (punch) packets are unauthenticated by design** — they carry no data, so spoofing them can only create NAT-state noise, not message compromise.
-- **the anti-replay window is fixed at 1024** — a legitimate but very late/reordered packet older than the window is rejected rather than delivered.
 - **everything hinges on the user actually doing the fingerprint check** — the software can't verify a human did their part correctly.
 - **a sudden/unclean disconnect (crash, network drop) is not detected** — only a clean exit (Ctrl+C or `/exit`) sends a disconnect signal to the peer. if the other side just vanishes without exiting cleanly, the UI stays in `CONNECTED` state with no timeout to catch it.
+- **the per-session sequence counter is 32-bit** — a session enforces a hard stop at 2^31 sent messages and requires a fresh handshake past that point; this is far beyond normal chat use but can matter for very long-running or extremely high-throughput sessions (e.g. transferring many large files back-to-back).
 
 ---
 
