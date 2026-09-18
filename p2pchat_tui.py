@@ -495,6 +495,9 @@ class ChatApp(App):
         if transfer_id is None:
             self._append_line(f"[#ff5555 italic]* file not found: {path}[/]")
             return
+        if transfer_id == "busy":
+            self._append_line("[#ffaa00 italic]* a file transfer is already in progress; wait for it to finish first[/]")
+            return
         self._append_line(f"[#999999 italic]* offering file: {path}[/]")
 
     def action_pick_file(self) -> None:
@@ -629,4 +632,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# _632
+# _635
