@@ -11,9 +11,6 @@ design:
     SecureReliableChannel.send), instead of waiting for one ack before
     sending the next chunk. this is what makes transfer speed reasonable
     over a single UDP round-trip latency.
-  - a slower, one-chunk-at-a-time alternative is included below,
-    commented out, in case you want simpler/more predictable behavior
-    instead of the windowed version.
   - WINDOW_SIZE here determines the channel's replay window (see
     ChatApp.__init__, which passes replay_window=WINDOW_SIZE * 100 to
     SecureReliableChannel), so it never needs manual syncing against
