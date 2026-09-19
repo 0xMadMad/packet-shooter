@@ -18,6 +18,12 @@ design:
     ChatApp.__init__, which passes replay_window=WINDOW_SIZE * 100 to
     SecureReliableChannel), so it never needs manual syncing against
     p2pcore.ReplayGuard's default.
+  - only one file transfer may be outstanding at a time across the whole
+    session, in either direction (see FileTransferManager._busy): a new
+    outgoing offer is refused locally, and a new incoming offer is auto-rejected, 
+    until the current transfer reaches a terminal state (done + result, or rejected).
+    this trades throughput for simplicity and avoids multiple transfers competing
+    over the same channel's retransmit/rate-limit budget.
 
 requirements: none beyond the stdlib (uses SecureReliableChannel from p2pcore)
 """
@@ -70,33 +76,30 @@ class FileTransferManager:
         self.outgoing = {}  # transfer_id -> outgoing state dict
         self.incoming = {}  # transfer_id -> incoming state dict
 
-        # only one transfer (send or receive) may be actively streaming chunks at a time;
-        # this holds the transfer_id currently allowed to stream, or None if the channel is free.
-        self._active_stream_id = None
+        self._busy = None
 
 
     # ---------------- outgoing ----------------
     def send_file(self, path: str):
         """
         creates the outgoing transfer state and sends a file offer for "path".
-        returns the transfer_id, or None if the file does not exist, or "busy" if another transfer is currently streaming.
+        returns the transfer_id, or None if the file does not exist, or "busy" if any other transfer (either direction) has not yet finished.
         """
         if not os.path.isfile(path):
             return None
 
         with self._lock:
-            if self._active_stream_id is not None:
+            if self._busy is not None:
                 return "busy"
+            transfer_id = self._next_id
+            self._next_id += 1
+            self._busy = ("send", transfer_id)
 
         file_size = os.path.getsize(path)
         total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         file_hash = self._hash_file(path)
         name = os.path.basename(path)
         name_bytes = name.encode("utf-8")[:200]
-
-        with self._lock:
-            transfer_id = self._next_id
-            self._next_id += 1
 
         self.outgoing[transfer_id] = {
             "path": path,
@@ -127,22 +130,13 @@ class FileTransferManager:
         """rejects an incoming file offer and removes its pending transfer state."""
         self.channel.send(bytes([STEP_REJECT]) + struct.pack("!I", transfer_id))
         self.incoming.pop(transfer_id, None)
+        self._release_busy("recv", transfer_id)
 
     def _begin_stream(self, transfer_id: int):
-        """
-        starts the outgoing transfer by filling the initial sliding window with file chunks after the peer accepts the offer.
-        claims the channel-wide active-stream slot; refuses to start (and tells the peer) if another transfer is already streaming.
-        """
+        """starts the outgoing transfer by filling the initial sliding window with file chunks after the peer accepts the offer."""
         state = self.outgoing.get(transfer_id)
         if not state:
             return
-        with self._lock:
-            if self._active_stream_id not in (None, transfer_id):
-                self.channel.send(bytes([STEP_REJECT]) + struct.pack("!I", transfer_id))
-                self.outgoing.pop(transfer_id, None)
-                self.on_result(transfer_id, "send", False, state["name"])
-                return
-            self._active_stream_id = transfer_id
         with state["lock"]:
             if state["next_chunk"] != 0:
                 return  # already streaming. ignore a duplicate ACCEPT
@@ -164,13 +158,11 @@ class FileTransferManager:
 
         def on_ack(ok: bool):
             if not ok:
-                # retransmission gave up entirely -> treat as a failed transfer
                 self.outgoing.pop(transfer_id, None)
-                self._release_stream_slot(transfer_id)
+                self._release_busy("send", transfer_id)
                 self.on_result(transfer_id, "send", False, state["name"])
                 return
             self._on_chunk_acked(transfer_id)
-
         self.channel.send(payload, on_ack=on_ack)
 
     def _on_chunk_acked(self, transfer_id: int):
@@ -223,6 +215,7 @@ class FileTransferManager:
         elif step == STEP_REJECT:
             transfer_id = struct.unpack("!I", body[:4])[0]
             state = self.outgoing.pop(transfer_id, None)
+            self._release_busy("send", transfer_id)
             if state:
                 self.on_result(transfer_id, "send", False, state["name"])
         elif step == STEP_CHUNK:
@@ -233,7 +226,7 @@ class FileTransferManager:
         elif step == STEP_RESULT:
             transfer_id, ok = struct.unpack("!IB", body[:5])
             state = self.outgoing.pop(transfer_id, None)
-            self._release_stream_slot(transfer_id)
+            self._release_busy("send", transfer_id)
             name = state["name"] if state else "?"
             self.on_result(transfer_id, "send", bool(ok), name)
 
@@ -246,6 +239,13 @@ class FileTransferManager:
         existing = self.incoming.get(transfer_id)
         if existing and existing["file"] is not None:
             return  # a transfer with this id is already in progress, ignore the duplicate/conflicting offer instead of clobbering it
+
+        with self._lock:
+            if self._busy is not None:
+                # another transfer (either direction) is still unresolved; auto-reject so the sender doesn't sit waiting forever
+                self.channel.send(bytes([STEP_REJECT]) + struct.pack("!I", transfer_id))
+                return
+            self._busy = ("recv", transfer_id)
 
         self.incoming[transfer_id] = {
             "name": name,
@@ -307,6 +307,7 @@ class FileTransferManager:
         self.channel.send(bytes([STEP_RESULT]) + struct.pack("!IB", transfer_id, 1 if ok else 0))
         self.on_result(transfer_id, "recv", ok, state["name"])
         self.incoming.pop(transfer_id, None)
+        self._release_busy("recv", transfer_id)
 
 
     # ---------------- shared ----------------
@@ -318,9 +319,9 @@ class FileTransferManager:
                 h.update(chunk)
         return h.digest()
 
-    def _release_stream_slot(self, transfer_id: int):
+    def _release_busy(self, direction: str, transfer_id: int):
         with self._lock:
-            if self._active_stream_id == transfer_id:
-                self._active_stream_id = None
+            if self._busy == (direction, transfer_id):
+                self._busy = None
 
-# _326
+# _327
